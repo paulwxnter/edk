@@ -10,6 +10,8 @@
 	"upload_source_maps": true,
 	"workers_dev": true,
 	"routes": [
+		{ "pattern": "edk.earth", "custom_domain": true },
+		{ "pattern": "www.edk.earth", "custom_domain": true },
 		{ "pattern": "api.edk.earth", "custom_domain": true },
 		{ "pattern": "cdn.edk.earth", "custom_domain": true },
 		{ "pattern": "embed.edk.earth", "custom_domain": true }
