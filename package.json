@@ -42,5 +42,11 @@
 		"preview": "npm run build && vite preview",
 		"typecheck": "npm run typegen && tsc -b"
 	},
-	"type": "module"
+	"type": "module",
+	"allowScripts": {
+		"esbuild@0.28.1": true,
+		"esbuild@0.28.2": true,
+		"workerd@1.20260811.1": true,
+		"workerd@1.20260921.1": true
+	}
 }
