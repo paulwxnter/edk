@@ -15,6 +15,9 @@ function build(db: D1Database) {
     basePath: "/api/auth",
     trustedOrigins: [site, "https://www.edk.earth", "http://localhost:5173", "http://localhost:5180", "http://localhost:8787"],
     session: { cookieCache: { enabled: true, maxAge: 5 * 60 } },
+    // EDK's own cookie names: the site that used to live on edk.earth also ran Better Auth and left
+    // "better-auth.*" cookies in browsers, which shadowed ours and dropped people back on /login.
+    advanced: { cookiePrefix: "edk" },
     emailAndPassword: { enabled: true, autoSignIn: !requireVerification, minPasswordLength: 8, requireEmailVerification: requireVerification },
     // Sign-up sends a verification link through Cloudflare Email Sending; the link signs the user in.
     emailVerification: {
