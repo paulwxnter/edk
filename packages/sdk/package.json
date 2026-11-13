@@ -1,0 +1,15 @@
+{
+  "name": "@edks/sdk",
+  "version": "0.1.0",
+  "description": "EDK SDK: Compass for Machines. Ask questions about the physical world (places, imagery, area facts, trends) from code.",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "engines": { "node": ">=18" },
+  "keywords": ["edk", "geospatial", "maps", "earth", "geojson", "agents", "api"],
+  "homepage": "https://edk.earth/docs#sdk",
+  "license": "MIT",
+  "publishConfig": { "access": "public" }
+}

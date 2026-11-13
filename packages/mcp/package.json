@@ -1,0 +1,13 @@
+{
+  "name": "@edks/mcp",
+  "version": "0.1.0",
+  "description": "EDK MCP server: give Claude, Codex, Cursor and Gemini a compass for the physical world.",
+  "type": "module",
+  "bin": { "edk-mcp": "index.js" },
+  "files": ["index.js", "README.md"],
+  "engines": { "node": ">=18" },
+  "keywords": ["mcp", "model-context-protocol", "edk", "geospatial", "maps", "agents"],
+  "homepage": "https://edk.earth/agents",
+  "license": "MIT",
+  "publishConfig": { "access": "public" }
+}

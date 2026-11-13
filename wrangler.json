@@ -8,7 +8,33 @@
 		"enabled": true
 	},
 	"upload_source_maps": true,
+	"workers_dev": true,
+	"routes": [
+		{ "pattern": "api.edk.earth", "custom_domain": true },
+		{ "pattern": "cdn.edk.earth", "custom_domain": true },
+		{ "pattern": "embed.edk.earth", "custom_domain": true }
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "edk-db",
+			"database_id": "723a1977-5f8f-4354-a337-ffcdfba996e2",
+			"migrations_dir": "migrations"
+		}
+	],
+	"send_email": [
+		{
+			"name": "EMAIL",
+			"allowed_sender_addresses": ["hello@edk.earth"]
+		}
+	],
 	"vars": {
-		"VALUE_FROM_CLOUDFLARE": "Hello from Cloudflare"
+		"SITE_URL": "https://edk.earth",
+		"API_URL": "https://api.edk.earth",
+		"CDN_URL": "https://cdn.edk.earth",
+		"EMBED_URL": "https://embed.edk.earth",
+		"STRIPE_MODE": "test",
+		"EMAIL_FROM": "hello@edk.earth",
+		"REQUIRE_EMAIL_VERIFICATION": "true"
 	}
 }

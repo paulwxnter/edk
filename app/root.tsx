@@ -1,75 +1,71 @@
-import {
-	isRouteErrorResponse,
-	Links,
-	Meta,
-	Outlet,
-	Scripts,
-	ScrollRestoration,
-} from "react-router";
-
+import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
 import type { Route } from "./+types/root";
+import { getSessionUser } from "../server/auth";
 import "./app.css";
 
 export const links: Route.LinksFunction = () => [
-	{ rel: "preconnect", href: "https://fonts.googleapis.com" },
-	{
-		rel: "preconnect",
-		href: "https://fonts.gstatic.com",
-		crossOrigin: "anonymous",
-	},
-	{
-		rel: "stylesheet",
-		href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
-	},
+  { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+  { rel: "icon", href: "/favicon.ico", sizes: "48x48" },
+  { rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
+  { rel: "preconnect", href: "https://fonts.googleapis.com" },
+  { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+  {
+    rel: "stylesheet",
+    href: "https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..700,0..100;1,9..144,300..700,0..100&family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&display=swap",
+  },
 ];
 
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const host = new URL(request.url).hostname;
+  // The embed host never needs a session.
+  if (host.startsWith("embed.")) return { user: null };
+  return { user: await getSessionUser(context.cloudflare.env.DB, request) };
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
-	return (
-		<html lang="en">
-			<head>
-				<meta charSet="utf-8" />
-				<meta name="viewport" content="width=device-width, initial-scale=1" />
-				<Meta />
-				<Links />
-			</head>
-			<body>
-				{children}
-				<ScrollRestoration />
-				<Scripts />
-			</body>
-		</html>
-	);
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="theme-color" content="#13110e" />
+        <meta property="og:image" content="https://edk.earth/og.png" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <Meta />
+        <Links />
+      </head>
+      <body>
+        {children}
+        <ScrollRestoration />
+        <Scripts />
+      </body>
+    </html>
+  );
 }
 
 export default function App() {
-	return <Outlet />;
+  return <Outlet />;
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-	let message = "Oops!";
-	let details = "An unexpected error occurred.";
-	let stack: string | undefined;
-
-	if (isRouteErrorResponse(error)) {
-		message = error.status === 404 ? "404" : "Error";
-		details =
-			error.status === 404
-				? "The requested page could not be found."
-				: error.statusText || details;
-	} else if (import.meta.env.DEV && error && error instanceof Error) {
-		details = error.message;
-		stack = error.stack;
-	}
-
-	return (
-		<main className="pt-16 p-4 container mx-auto">
-			<h1>{message}</h1>
-			<p>{details}</p>
-			{stack && (
-				<pre className="w-full p-4 overflow-x-auto">
-					<code>{stack}</code>
-				</pre>
-			)}
-		</main>
-	);
+  let message = "Something went wrong";
+  let details = "An unexpected error occurred.";
+  let stack: string | undefined;
+  if (isRouteErrorResponse(error)) {
+    message = error.status === 404 ? "Off the map" : "Error";
+    details = error.status === 404 ? "This page could not be found." : error.statusText || details;
+  } else if (import.meta.env.DEV && error && error instanceof Error) {
+    details = error.message;
+    stack = error.stack;
+  }
+  return (
+    <main className="site">
+      <section className="page-hero">
+        <h1>{message}</h1>
+        <p>{details}</p>
+        <p style={{ marginTop: "1.5rem" }}><a className="btn" href="/">Back to edk.earth</a></p>
+        {stack ? <pre className="code" style={{ padding: "1rem", overflowX: "auto" }}>{stack}</pre> : null}
+      </section>
+    </main>
+  );
 }

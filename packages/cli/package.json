@@ -1,0 +1,13 @@
+{
+  "name": "@edks/cli",
+  "version": "0.1.0",
+  "description": "EDK command line: ask questions about the physical world from your terminal.",
+  "type": "module",
+  "bin": { "edk": "index.js" },
+  "files": ["index.js", "README.md"],
+  "engines": { "node": ">=18" },
+  "keywords": ["edk", "cli", "geospatial", "maps", "earth"],
+  "homepage": "https://edk.earth/docs#cli",
+  "license": "MIT",
+  "publishConfig": { "access": "public" }
+}
