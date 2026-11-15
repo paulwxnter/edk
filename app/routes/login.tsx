@@ -1,7 +1,6 @@
 import { redirect } from "react-router";
 import type { Route } from "./+types/login";
 import { SiteHeader } from "~/components/chrome";
-import { Contours } from "~/components/brand";
 import AuthForm from "~/components/AuthForm";
 import { getSessionUser } from "../../server/auth";
 
@@ -17,7 +16,7 @@ export default function Page() {
     <div className="site">
       <SiteHeader />
       <main className="auth">
-        <div className="hero-bg" aria-hidden="true"><Contours seed={11} /></div>
+        <div className="hero-bg" aria-hidden="true" />
         <AuthForm mode="login" />
       </main>
     </div>

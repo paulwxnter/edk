@@ -28,6 +28,32 @@ export function drawHouse(c:CanvasRenderingContext2D,a:Agent,time:number) {
   c.restore();
 }
 
+/** A mountain with the weather moving over it: sun on one slope, a rain cloud drifting across the other. */
+export function drawTerrain(c:CanvasRenderingContext2D,a:Agent,time:number) {
+  const s=a.size;
+  c.save();
+  // Sun, behind the ridge.
+  oval(c,-s*.82,-s*.62,s*(.17+.012*Math.sin(time*1.1)),s*(.17+.012*Math.sin(time*1.1)),"#d9a85a");
+  // The far peak, then the main one with its shaded face and snow.
+  c.fillStyle="#7f9188";c.beginPath();c.moveTo(-s*1.2,s*.5);c.lineTo(-s*.5,-s*.28);c.lineTo(s*.15,s*.5);c.closePath();c.fill();
+  c.fillStyle="#a89a84";c.beginPath();c.moveTo(-s*.62,s*.5);c.lineTo(s*.22,-s*.82);c.lineTo(s*1.15,s*.5);c.closePath();c.fill();
+  c.fillStyle="#786f62";c.beginPath();c.moveTo(s*.22,-s*.82);c.lineTo(s*1.15,s*.5);c.lineTo(s*.42,s*.5);c.lineTo(s*.3,-s*.1);c.closePath();c.fill();
+  c.fillStyle="#ebe4d6";c.beginPath();c.moveTo(s*.22,-s*.82);c.lineTo(-s*.03,-s*.42);c.lineTo(s*.1,-s*.5);c.lineTo(s*.2,-s*.34);c.lineTo(s*.33,-s*.5);c.lineTo(s*.5,-s*.4);c.closePath();c.fill();
+  // Forest at the foot, and a river coming down out of it.
+  oval(c,-s*.05,s*.5,s*1.25,s*.15,"#799763");
+  c.strokeStyle="#85a7ae";c.lineWidth=s*.075;c.beginPath();c.moveTo(-s*.2,s*.38);c.bezierCurveTo(-s*.42,s*.5,-s*.05,s*.58,-s*.36,s*.74);c.stroke();
+  // A cloud drifting over the far slope, raining as it goes.
+  const cx=s*.62+Math.sin(time*.22+a.seed)*s*.38,cy=-s*.58;
+  for(let i=0;i<5;i++) {
+    const fall=(time*.9+i*.2+a.seed)%1;
+    c.globalAlpha=.75*(1-fall*.6);c.strokeStyle="#85a7ae";c.lineWidth=s*.035;c.beginPath();
+    const x=cx+(i-2)*s*.11,y=cy+s*.12+fall*s*.5;c.moveTo(x,y);c.lineTo(x-s*.03,y+s*.11);c.stroke();
+  }
+  c.globalAlpha=1;
+  oval(c,cx-s*.17,cy+s*.02,s*.17,s*.12,"#cfd2c9");oval(c,cx+s*.03,cy-s*.07,s*.2,s*.16,"#d9dbd2");oval(c,cx+s*.22,cy+s*.02,s*.16,s*.11,"#c3c7be");
+  c.restore();
+}
+
 export function drawCar(c:CanvasRenderingContext2D,a:Agent,time:number) {
   const s=a.size,dir=Math.cos(a.angle)>=0?1:-1;
   c.save();c.scale(dir,1);c.translate(0,Math.sin(time*3+a.seed)*1.4);

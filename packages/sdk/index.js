@@ -1,4 +1,4 @@
-// @edks/sdk: a small client for the EDK API (https://api.edk.earth/v1). No dependencies.
+// @edks/sdk: a small client for EDK-1 (https://api.edk.earth/v1). No dependencies.
 const DEFAULT_BASE = "https://api.edk.earth";
 
 export class EDKError extends Error {
@@ -20,11 +20,6 @@ export class EDK {
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.client = options.client ?? "sdk";
     if (!this.apiKey) throw new EDKError("Missing API key. Pass { apiKey } or set EDK_API_KEY. Create one at https://edk.earth/console/keys", 401);
-    this.trends = {
-      search: (q) => this.get("/v1/trends/search", { q }),
-      regions: (params) => this.get("/v1/trends/regions", params),
-      series: ({ feature, regions, tf = "monthly" }) => this.get("/v1/trends/series", { feature, regions: Array.isArray(regions) ? regions.join(",") : regions, tf }),
-    };
   }
 
   /** Low-level request. */
@@ -47,48 +42,60 @@ export class EDK {
     return data;
   }
 
-  get(path, query) {
-    return this.request("GET", path, { query });
+  /** Discover places: a question in plain words. Returns { id, model, embed_url, usage, data }. */
+  discover(query, options = {}) {
+    return this.request("POST", "/v1/discover", { body: { query, ...options } });
   }
 
-  /** Ask a question in plain words. Returns { id, embed_url, usage, data }. */
-  search(query, options = {}) {
-    return this.request("POST", "/v1/search", { body: { query, ...options } });
-  }
-
-  /** A stored search result you created (free). */
-  result(id) {
-    return this.get(`/v1/search/${encodeURIComponent(id)}`);
-  }
-
-  /** Everything known about the small area at a point. */
+  /** Inspect a point: what is known about the area there. */
   inspect({ lat, lng }) {
-    return this.get("/v1/inspect", { lat, lng });
+    return this.request("GET", "/v1/inspect", { query: { lat, lng } });
   }
 
-  /** Regions by name ({ q, type }), slug, id, or containing a point ({ lat, lng }). */
-  regions(params) {
-    return this.get("/v1/regions", params);
+  /**
+   * Route from A to B, passing what you include and around what you ask it to avoid.
+   * `from` and `to` are [lng, lat], {lat, lng}, "lat, lng", or a place name or address.
+   * @param {{ from: any, to: any, include?: string, conditions?: string, profile?: "driving" | "walking" | "cycling" }} options
+   */
+  route(options) {
+    return this.request("POST", "/v1/route", { body: options });
   }
 
-  /** Addresses and places for text. */
-  geocode(q) {
-    return this.get("/v1/geocode", { q });
+  /** Monitor: watch an area for new events of chosen artifacts (Tier 4 and above). */
+  get monitors() {
+    const r = (method, path, init) => this.request(method, path, init);
+    return {
+      /** @param {{ artifacts: string[], area: any, since?: string, interval?: string | number, webhook_url?: string, prompt?: string, name?: string }} options */
+      create: (options) => r("POST", "/v1/monitors", { body: options }),
+      list: () => r("GET", "/v1/monitors"),
+      get: (id) => r("GET", `/v1/monitors/${encodeURIComponent(id)}`),
+      update: (id, patch) => r("PATCH", `/v1/monitors/${encodeURIComponent(id)}`, { body: patch }),
+      pause: (id) => r("PATCH", `/v1/monitors/${encodeURIComponent(id)}`, { body: { status: "paused" } }),
+      resume: (id) => r("PATCH", `/v1/monitors/${encodeURIComponent(id)}`, { body: { status: "active" } }),
+      delete: (id) => r("DELETE", `/v1/monitors/${encodeURIComponent(id)}`),
+      scan: (id) => r("POST", `/v1/monitors/${encodeURIComponent(id)}/scan`),
+      events: (id, { after, limit } = {}) => r("GET", `/v1/monitors/${encodeURIComponent(id)}/events`, { query: { after, limit } }),
+    };
   }
 
-  /** What EDK can find ({ q, type, slug }). */
-  catalog(params = {}) {
-    return this.get("/v1/catalog", params);
+  /** Artifacts by name: what Discover finds and what Monitor can watch. */
+  artifacts(q = "") {
+    return this.request("GET", "/v1/artifacts", { query: { q } });
   }
 
-  /** Sources behind area facts ({ keys: "elevation_m,flood_zone" }). */
-  sources(params) {
-    return this.get("/v1/sources", params);
+  /** A stored Discover result you created (free). */
+  result(id) {
+    return this.request("GET", `/v1/discover/${encodeURIComponent(id)}`);
   }
 
-  /** Balance, this month's usage and limits. */
+  /** Balance, tier and limits. */
   usage() {
-    return this.get("/v1/usage");
+    return this.request("GET", "/v1/usage");
+  }
+
+  /** @deprecated Use discover(). */
+  search(query, options = {}) {
+    return this.discover(query, options);
   }
 }
 

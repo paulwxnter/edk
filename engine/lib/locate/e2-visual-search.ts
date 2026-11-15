@@ -3,9 +3,12 @@ const BASE_URL = (process.env.TURBOPUFFER_BASE_URL || "https://api.turbopuffer.c
 
 // Query vectors come only from an artifact's stored embeddings (artifacts_ebmed). There is no
 // on-the-fly text embedding: a feature without stored vectors has no image results.
-async function queryNamespace(namespace: string, vector: number[], limit: number, year?: number | null, h3R5?: string[], extraFilters: unknown[] = [], h3R8?: string[]) {
+// A stored row carries about 160 attributes (2.5 MB per 500 rows). Results only show a handful, so
+// callers name the ones they read and the query returns in a fraction of the time.
+export const RESULT_ATTRIBUTES = ["address", "captured_at", "lat", "lng", "h3_r8", "visual_url", "is_pano"];
+async function queryNamespace(namespace: string, vector: number[], limit: number, year?: number | null, h3R5?: string[], extraFilters: unknown[] = [], h3R8?: string[], attributes?: string[]): Promise<TurboRow[]> {
   const key = process.env.TURBOPUFFER_KEY || process.env.TURBOPUFFER_API_KEY; if (!key) throw new Error("No Turbopuffer API key configured.");
-  const body: Record<string, unknown> = { rank_by: ["vector", "ANN", vector], limit, exclude_attributes: ["vector", "embed", "description"] };
+  const body: Record<string, unknown> = { rank_by: ["vector", "ANN", vector], limit, ...(attributes?.length ? { include_attributes: attributes } : { exclude_attributes: ["vector", "embed", "description"] }) };
   const filters: unknown[] = [];
   if (year) filters.push(["year", "Eq", String(year)]);
   if (h3R5?.length) filters.push(["h3_r5", "In", h3R5]);
@@ -17,6 +20,8 @@ async function queryNamespace(namespace: string, vector: number[], limit: number
   if (filters.length > 1) body.filters = ["And", filters];
   const response = await fetch(`${BASE_URL}/v2/namespaces/${encodeURIComponent(namespace)}/query`, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
   if (response.status === 404) { const error = new Error("Turbopuffer namespace not found."); error.name = "NamespaceNotFound"; throw error; }
+  // A namespace whose schema lacks one of the named attributes rejects the list: ask for everything instead.
+  if (response.status === 400 && attributes?.length) return queryNamespace(namespace, vector, limit, year, h3R5, extraFilters, h3R8);
   if (!response.ok) throw new Error(`Turbopuffer query failed (${response.status}).`);
   const value = (await response.json() as any); return (value.rows || value.results || []) as TurboRow[];
 }
@@ -44,17 +49,17 @@ function geojson(rows: TurboRow[], maxDistance = 0.59) {
     }),
   };
 }
-export async function searchVisualGeojson({ query, regionId, year, limit, vector: suppliedVector, h3R5, h3R8, candidates, maxDistance, attributeFilters }: { query: string; h3R8?: string[]; regionId?: string | null; year?: string | number | null; limit: number; vector?: number[]; h3R5?: string[]; candidates?: number; maxDistance?: number; attributeFilters?: unknown[] }) {
+export async function searchVisualGeojson({ query, regionId, year, limit, vector: suppliedVector, h3R5, h3R8, candidates, maxDistance, attributeFilters, strictRegion, attributes }: { attributes?: string[]; query: string; h3R8?: string[]; regionId?: string | null; year?: string | number | null; limit: number; vector?: number[]; h3R5?: string[]; candidates?: number; maxDistance?: number; attributeFilters?: unknown[]; strictRegion?: boolean }) {
   const parsedYear = year === null || year === undefined || year === "" || year === "all" ? null : Number(year);
   const filterYear = parsedYear !== null && Number.isInteger(parsedYear) && parsedYear > 1900 && parsedYear < 2200 ? parsedYear : null;
   if (!suppliedVector?.length) return { type: "FeatureCollection", features: [] as ReturnType<typeof geojson>["features"] };
   const vector = suppliedVector; let rows: TurboRow[];
-  const fetchRows = (namespace: string, activeYear: number | null) => queryNamespace(namespace, vector, Math.min(1200, Math.max(limit + 50, candidates ?? 250)), activeYear, h3R5, attributeFilters, h3R8);
+  const fetchRows = (namespace: string, activeYear: number | null) => queryNamespace(namespace, vector, Math.min(1200, Math.max(limit + 50, candidates ?? 250)), activeYear, h3R5, attributeFilters, h3R8, attributes);
   // Position searches run on the global namespace and narrow by h3_r5 cell,
   // so a point outside the routed region still finds what is there.
   try { rows = await fetchRows(h3R5?.length ? "global" : regionId || "global", filterYear); }
   catch (error) {
-    if ((error as Error).name !== "NamespaceNotFound" || !regionId) throw error;
+    if ((error as Error).name !== "NamespaceNotFound" || !regionId || strictRegion) throw error;
     rows = await fetchRows("global", filterYear);
   }
   const collection = geojson(rows, maxDistance); return { ...collection, features: collection.features.slice(0, limit) };

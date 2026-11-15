@@ -1,13 +1,50 @@
 {
   "name": "@edks/mcp",
-  "version": "0.1.0",
-  "description": "EDK MCP server: give Claude, Codex, Cursor and Gemini a compass for the physical world.",
+  "version": "0.6.1",
+  "mcpName": "earth.edk/mcp",
+  "description": "EDK-1, a foundation model of the physical world trained on 30 billion images. Your agent can find any object, condition, event or living thing on Earth, read what's true there, route around it, and get alerted when it changes.",
   "type": "module",
-  "bin": { "edk-mcp": "index.js" },
-  "files": ["index.js", "README.md"],
-  "engines": { "node": ">=18" },
-  "keywords": ["mcp", "model-context-protocol", "edk", "geospatial", "maps", "agents"],
+  "bin": {
+    "edk-mcp": "index.js"
+  },
+  "main": "index.js",
+  "scripts": {
+    "build": "node --check index.js",
+    "start": "node index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "edk",
+    "geospatial",
+    "maps",
+    "location",
+    "routing",
+    "gis",
+    "agents",
+    "claude",
+    "cursor"
+  ],
   "homepage": "https://edk.earth/agents",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edkearth/mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/edkearth/mcp/issues"
+  },
+  "author": "EDK (https://edk.earth)",
   "license": "MIT",
-  "publishConfig": { "access": "public" }
+  "publishConfig": {
+    "access": "public"
+  }
 }

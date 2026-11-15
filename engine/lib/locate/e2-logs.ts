@@ -25,6 +25,10 @@ export type RoutingTrace = {
   answer: boolean;
   safety: boolean;
   attempts: RoutingAttempt[];
+  /** Private request decisions and execution outcome, retained in stream_logs only. */
+  diagnostics?: Record<string, unknown>;
+  /** Separate route passes, including retries and fallback searches. */
+  run_history?: Array<Record<string, unknown>>;
 };
 
 export type SearchLogStatus = "running" | "ok" | "error" | "blocked";
@@ -136,6 +140,8 @@ export class SearchLog {
   readonly id = crypto.randomUUID();
   private chain: Promise<unknown>;
   private done = false;
+  private progressQueued = false;
+  private routingQueued = false;
 
   constructor(readonly query: string, readonly source: string, private readonly timer: QueryTimer, who: { userId?: string | null; sessionId?: string | null } = {}) {
     this.chain = this.run(async () => {
@@ -146,6 +152,7 @@ export class SearchLog {
       );
     });
     timer.onChange = () => this.progress();
+    timer.onRoutingChange = () => this.progressRouting();
   }
 
   private run(fn: () => Promise<unknown>) {
@@ -156,21 +163,42 @@ export class SearchLog {
 
   /** Stages so far, including the ones still running. Skipped once finished. */
   private progress() {
-    if (this.done) return;
-    const stages = this.timer.snapshot();
-    const ms = this.timer.totalMs();
-    void this.run(() => sql.query(
-      "update stream_logs set stage_timings = $2::jsonb, duration_ms = $3, updated_at = now() where id = $1::uuid and status = 'running'",
-      [this.id, JSON.stringify(stages), ms],
-    ));
+    // One write waits at a time and reads the stages when it runs: a write per stage start and end would
+    // queue dozens of round trips that the final write, and so the response, has to wait behind.
+    if (this.done || this.progressQueued) return;
+    this.progressQueued = true;
+    void this.run(async () => {
+      this.progressQueued = false;
+      if (this.done) return;
+      await sql.query(
+        "update stream_logs set stage_timings = $2::jsonb, duration_ms = $3, updated_at = now() where id = $1::uuid and status = 'running'",
+        [this.id, JSON.stringify(this.timer.snapshot()), this.timer.totalMs()],
+      );
+    });
+  }
+
+  /** Persist routing changes independently of timer ticks to keep progress writes light. */
+  private progressRouting() {
+    if (this.done || this.routingQueued) return;
+    this.routingQueued = true;
+    void this.run(async () => {
+      this.routingQueued = false;
+      if (this.done) return;
+      await sql.query(
+        "update stream_logs set routing_trace = $2::jsonb, updated_at = now() where id = $1::uuid and status = 'running'",
+        [this.id, JSON.stringify(this.timer.routingTrace() ?? {})],
+      );
+    });
   }
 
   /** Final state. Await it before responding so the row is complete. */
   finish(entry: Omit<SearchLogEntry, "query" | "stages" | "durationMs">): Promise<unknown> {
     this.done = true;
     this.timer.onChange = undefined;
+    this.timer.onRoutingChange = undefined;
     const stages = this.timer.snapshot();
     const ms = this.timer.totalMs();
+    const routingTrace = this.timer.routingTrace() ?? entry.routingTrace ?? {};
     return this.run(() => sql.query(
       `update stream_logs
           set status = $2, error = $3, result_id = $4, region_id = $5, region_name = $6, feature_names = $7,
@@ -188,7 +216,7 @@ export class SearchLog {
         entry.resultCount ?? 0,
         Math.round(ms),
         JSON.stringify(stages),
-        JSON.stringify(entry.routingTrace ?? {}),
+        JSON.stringify(routingTrace),
         entry.tokens?.decisionInput ?? 0,
         entry.tokens?.decisionCalls ?? 0,
         entry.tokens?.answerInput ?? 0,
@@ -204,8 +232,11 @@ export class QueryTimer {
   readonly startedAt = Date.now();
   private stages: StageTiming[] = [];
   private marks: Record<string, number> = {};
+  private routeTrace: RoutingTrace | null = null;
   /** Called whenever a stage starts or ends (SearchLog uses it to keep the row current). */
   onChange?: () => void;
+  /** Called when decisions change so SearchLog can persist them without duplicating timer payloads. */
+  onRoutingChange?: () => void;
 
   mark(stage: string): void {
     this.marks[stage] = Date.now();
@@ -238,6 +269,46 @@ export class QueryTimer {
   record(stage: string, ms: number): void {
     this.stages.push({ stage, ms });
     this.onChange?.();
+  }
+
+  /** Begin a routing pass so timeouts and mid-flight logs retain the choices made so far. */
+  beginRoutingTrace(trace: RoutingTrace): void {
+    const snapshot = structuredClone(trace);
+    const diagnostics = { ...(this.routeTrace?.diagnostics ?? {}), ...(snapshot.diagnostics ?? {}) };
+    const current = { ...snapshot, diagnostics };
+    const history = [...(this.routeTrace?.run_history ?? []), structuredClone(current)];
+    this.routeTrace = { ...current, run_history: history };
+    this.onRoutingChange?.();
+  }
+
+  /** Refresh the active routing pass after a provider attempt or a decision update. */
+  updateRoutingTrace(trace: RoutingTrace): void {
+    if (!this.routeTrace) {
+      this.beginRoutingTrace(trace);
+      return;
+    }
+    const current = { ...this.routeTrace, ...structuredClone(trace) };
+    const history = [...(this.routeTrace.run_history ?? [])];
+    if (history.length) history[history.length - 1] = { ...history[history.length - 1], ...structuredClone(trace) };
+    this.routeTrace = { ...current, run_history: history };
+    this.onRoutingChange?.();
+  }
+
+  /** Append decision and execution details to the active private routing record. */
+  updateRoutingDiagnostics(patch: Record<string, unknown>): void {
+    const base: RoutingTrace = this.routeTrace ?? {
+      selected_provider: null, selected_model: null, selected_artifact: null,
+      selected_region_ids: [], selected_year: null, answer: false, safety: false, attempts: [],
+    };
+    const diagnostics = { ...(base.diagnostics ?? {}), ...structuredClone(patch) };
+    const history = [...(base.run_history ?? [])];
+    if (history.length) history[history.length - 1] = { ...history[history.length - 1], diagnostics: { ...((history[history.length - 1].diagnostics as Record<string, unknown> | undefined) ?? {}), ...structuredClone(patch) } };
+    this.routeTrace = { ...base, diagnostics, run_history: history };
+    this.onRoutingChange?.();
+  }
+
+  routingTrace(): RoutingTrace | null {
+    return this.routeTrace ? structuredClone(this.routeTrace) : null;
   }
 
   all(): StageTiming[] {

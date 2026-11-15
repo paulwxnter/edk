@@ -21,36 +21,6 @@ export const TYPE_LABEL: Record<IndicatorType, { singular: string; plural: strin
 };
 export const isIndicatorType = (v: unknown): v is IndicatorType => typeof v === "string" && v in TYPE_LABEL;
 
-/** Where an indicator's numbers come from, in plain words. Raw method names are never shown. */
-export function sourceLabel(method: string | null) {
-  switch (method) {
-    case "permits":
-      return "Building permits stream";
-    case "crimes":
-      return "Crime reports stream";
-    case "accidents":
-      return "Traffic collisions stream";
-    case "service_requests":
-      return "311 service requests stream";
-    case "inspections":
-      return "Inspections stream";
-    case "osm":
-    case "osm_alt":
-      return "Mapped places";
-    case "name":
-    case "terms":
-      return "Street-level imagery";
-    case "footprints_nature":
-    case "category_footprints_nature":
-      return "Species observations";
-    case "web_technologies":
-    case "category_web_techologies":
-      return "Web technology census";
-    default:
-      return method?.startsWith("research") ? "Research dataset" : "EDK index";
-  }
-}
-
 export type Model = {
   featureId: number;
   slug: string;
@@ -59,7 +29,28 @@ export type Model = {
   method: string | null;
   indicatorType: IndicatorType | null;
   interests: string[];
+  /** Ledger measurement this signal is read in ("count" for most; web technologies have their own). */
+  measurement: string;
+  /** What one unit of the measurement is, for labels ("websites", "installations"). Null for plain counts. */
+  unit: string | null;
+  /** Only reported per country (web technologies): any city, county or state resolves to its country. */
+  countryLevel: boolean;
 };
+
+/** Web technology signals, from HTTP Archive: one per technology, plus one per technology category. */
+export const isWebTechMethod = (method: string | null | undefined) => method === "web_technologies" || isWebTechCategoryMethod(method);
+// The source data spells the category method "techologies"; accept both spellings.
+export const isWebTechCategoryMethod = (method: string | null | undefined) => method === "category_web_techologies" || method === "category_web_technologies";
+
+/** Ledger measurement, unit and reporting level for an artifact method (mirrors ov-insight's method table). */
+export function measurementFor(method: string | null | undefined): Pick<Model, "measurement" | "unit" | "countryLevel"> {
+  if (method === "web_technologies") return { measurement: "wt_origins_mobile", unit: "websites", countryLevel: true };
+  if (isWebTechCategoryMethod(method)) return { measurement: "wt_technology_installations_mobile", unit: "installations", countryLevel: true };
+  return { measurement: "count", unit: null, countryLevel: false };
+}
+
+/** Region types a signal can be read at. */
+export const regionTypesFor = (model: Pick<Model, "countryLevel">) => (model.countryLevel ? ["country"] : ["city", "county", "state", "country"]);
 
 export type Region = {
   id: number;
@@ -81,7 +72,7 @@ export type RegionValue = { region: Region; value: number };
 export type PeerRow = { slug: string; name: string; value: number };
 
 export type SearchHit =
-  | { kind: "feature"; slug: string; name: string; type: IndicatorType | null; source: string }
+  | { kind: "feature"; slug: string; name: string; type: IndicatorType | null }
   | { kind: "region"; slug: string; name: string; label: string };
 
 export function regionLabel(r: Pick<Region, "name" | "type" | "stateCode" | "countryCode">) {
@@ -125,3 +116,39 @@ export const granularityFor = (tf: Timeframe) => (tf === "monthly" ? "month" : t
 
 /** Monochrome-first series palette: white for the primary region, then quiet greys and one green accent. */
 export const SERIES_COLORS = ["#f5f5f5", "#4ade80", "#94a3b8", "#64748b", "#cbd5e1"];
+
+export type SourceColumnKind = "date" | "month" | "number" | "percent" | "score" | "bytes" | "text";
+
+export type SourcePage = {
+  columns: { key: string; label: string; kind?: SourceColumnKind }[];
+  rows: (string | null)[][];
+  hasMore: boolean;
+  page: number;
+  /** Whether rows can be narrowed by date (the table has a date column). */
+  dated?: boolean;
+  /** What the rows are, e.g. "Source records" or "Monthly ledger". */
+  title?: string;
+};
+
+/** Formats one Data Viewer cell for display (exports keep the raw value). */
+export function formatSourceCell(value: string | null, kind: SourceColumnKind | undefined) {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  switch (kind) {
+    case "month": {
+      const [y, m] = value.split("-").map(Number);
+      return y && m ? `${MONTHS[m - 1]} ${y}` : value;
+    }
+    case "number":
+      return Number.isFinite(n) ? n.toLocaleString("en-US", { maximumFractionDigits: 2 }) : value;
+    case "percent":
+      return Number.isFinite(n) ? `${n.toFixed(n >= 10 ? 1 : 2)}%` : value;
+    case "score":
+      return Number.isFinite(n) ? String(Math.round(n <= 1 ? n * 100 : n)) : value;
+    case "bytes":
+      if (!Number.isFinite(n)) return value;
+      return n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${Math.round(n / 1e3)} KB` : `${n} B`;
+    default:
+      return value;
+  }
+}

@@ -1,4 +1,4 @@
-import { searchVisualGeojson } from "./e2-visual-search";
+import { RESULT_ATTRIBUTES, searchVisualGeojson } from "./e2-visual-search";
 import { sql } from "./e2-db";
 import { mediaProxyUrl } from "./media-proxy";
 import { QueryTimer, type RoutingAttempt, type RoutingProvider, type RoutingTrace, type StageTiming } from "./e2-logs";
@@ -8,8 +8,14 @@ import { CIVIC_METHODS } from "./civic";
 import { appendSqlFilters, resolveAttributeFilters, sortByAttribute, startAttributeIntent, toTurbopuffer, type AttributeFilter, type FindAttributeOptions, type FiltersReport } from "./attributes";
 import type { GateAttempt } from "./attributes/gate";
 import { asksAboutAmount } from "./intent";
-import { DECISION_MODEL, jevRequest, openAiDecision } from "./jev";
+import { DECISION_MODEL, decide, jevRequest, openAiDecision } from "./jev";
 import { civicIndexes, tableColumns } from "./civic-tables";
+import { parseSpatialPlan, spatialFilterQuestions, spatialQuestions, type SpatialInput, type SpatialPlan } from "./spatial-plan";
+import { ATTRIBUTE_BY_KEY } from "./attributes/catalog";
+import { describe, toWhere } from "./attributes/compile";
+import { executeSpatial, mappedRecords } from "./spatial-search";
+import { getRegionById } from "../lens-server";
+import type { PickedArea } from "./areas";
 
 export type GeoSearchPlan = { feature_id: string | null; feature_name: string; artifact_id?: string | null; artifact_name?: string | null; region_id: string | null; region_name: string | null; region_ids?: string[]; region_names?: string[]; year?: string | null; engine: "turbopuffer"; search_terms: string[] };
 type DirectArtifact = { id: string; name: string; feature_id: string | null; method: string; source_table: string | null; terms: string[] };
@@ -217,6 +223,7 @@ async function directArtifactSearch(artifact: DirectArtifact, region: any, year:
 }
 export type SearchMethod = "name" | "terms";
 type GeoSearchPlanSet = GeoSearchPlan & {
+  spatial?: SpatialPlan | null;
   features: GeoSearchPlan[];
   answer: boolean;
   safety: boolean;
@@ -246,9 +253,10 @@ Each feature_name must be a concise noun phrase (normally 1-3 words), with no re
 Use a region ID only from the supplied region lookup when a region is named by the user. Never invent IDs. If no region is named, return null region_id and region_name.
 Always route every feature to turbopuffer. Never select or return a source table. All routes return GeoJSON. If the query has one feature, return a one-item features array.`;
 
-type RouterPayload = { query: string; matched_region_candidates: Array<{ id: string; name: string; type: string; state_name: string | null; country_name: string | null; state_code: string | null; country_code: string | null }>; matched_artifact_candidates: Array<{ id: string; name: string; feature_id: string | null }> };
+type RouterPayload = { query: string; spatialContext?: SpatialInput; matched_region_candidates: Array<{ id: string; name: string; type: string; state_name: string | null; country_name: string | null; state_code: string | null; country_code: string | null }>; matched_artifact_candidates: Array<{ id: string; name: string; feature_id: string | null }> };
 
 type JevChoice = {
+  spatial?: SpatialPlan | null;
   regionIds: string[];
   artifactIds: string[];
   year: string | null;
@@ -288,8 +296,11 @@ async function routeWithJev(payload: RouterPayload, options?: { key?: string; ur
   if (!key && !options?.openai) throw new Error("JEV_API_KEY is not configured.");
   const criteria = <T extends { id: string; name: string }>(prefix: string, rows: T[], none: string) => Object.fromEntries([["none", none], ...rows.map(row => [`${prefix}:${row.id}`, row.name])]);
   const yearChoices = getSearchYearOptions();
+  const spatialSpec = payload.spatialContext && !options?.openai
+    ? spatialQuestions(payload.query, payload.matched_artifact_candidates, payload.matched_region_candidates, payload.spatialContext) : null;
   const questions = {
-        ...Object.fromEntries(payload.matched_region_candidates.map(row => [`region:${row.id}`, { type: "choice", instructions: "Is this exact region explicitly requested by the user? Select requested only when it is named or unambiguously referred to. When nested regions conflict, prefer country over state, state over city, and city over county.", criteria: { requested: [row.name, row.type, row.state_name, row.country_name].filter(Boolean).join(" — "), not_requested: "The user did not explicitly request this region." } }])),
+        ...spatialSpec?.questions,
+        ...Object.fromEntries(payload.matched_region_candidates.map(row => [`region:${row.id}`, { type: "choice", instructions: "Is this exact region explicitly requested by the user? Select requested only when it is named or unambiguously referred to. A larger region named only to qualify a smaller one inside it is not the search area: for 'Sacramento, California', Sacramento is requested and California is not. When a city and a county share a name, prefer the city.", criteria: { requested: [row.name, row.type, row.state_name, row.country_name].filter(Boolean).join(" — "), not_requested: "The user did not explicitly request this region." } }])),
         year: { type: "choice", instructions: "Which one capture year does the user explicitly request? Choose none when no single year is requested. Use the query in state to identify the requested year.", criteria: Object.fromEntries([["none", "No specific capture year requested."], ...yearChoices.map(year => [`year:${year}`, year])]) },
         ...Object.fromEntries(payload.matched_artifact_candidates.slice(0, 48).map(row => [`artifact:${row.id}`, { type: "choice", instructions: "Is this feature explicitly requested by the user? Select requested only when it is a requested subject. Multiple features may be requested together; locations and years are filters, not features. Pick exactly one catalog name per thing the user asked for: when several names overlap or describe the same subject (for 'construction permits', 'Construction Permit' is requested but 'New Building Permit', 'Building Permit' and 'Construction' are not), only the single closest name is requested and every broader, narrower or related name is not_requested. A word that belongs to the place name ('New' in 'New York') never makes a feature requested. Words that describe the surrounding place (income, wealth, poverty, rent, median, flood zones, elevation, steep, waterfront, polluted, urban, rural, tree canopy, climate) are attribute filters, not features: in 'thefts in high poverty areas' only Theft is requested, and in 'permits in neighborhoods with median income over $150k' only the permit is requested.", criteria: { requested: row.name, not_requested: `The user did not request ${row.name}.` } }])),
         answer: { type: "noul", instructions: "Does the user's query warrant a concise text answer in addition to search results?", criteria: { true: "An analytical query, comparison, explanation, question, or request that asks for interpretation.", false: "A simple lookup, browsing request, or short feature/location search." } },
@@ -306,7 +317,8 @@ async function routeWithJev(payload: RouterPayload, options?: { key?: string; ur
   };
   const yearChoice = answers?.year?.choice || "none";
   const selectedYear = yearChoice.startsWith("year:") ? yearChoice.slice(5) : null;
-  return { regionIds: payload.matched_region_candidates.filter(row => answers?.[`region:${row.id}`]?.choice === "requested").map(row => String(row.id)), artifactIds: payload.matched_artifact_candidates.filter(row => answers?.[`artifact:${row.id}`]?.choice === "requested").map(row => String(row.id)), year: selectedYear && yearChoices.includes(selectedYear) ? selectedYear : null, answer: booleanAnswer("answer"), safety: booleanAnswer("safety", 0.4), response: { answers: safeJevAnswers(value) }, httpStatus };
+  const spatial = spatialSpec && Number.isFinite(answers?.safety?.noul) ? parseSpatialPlan(answers, spatialSpec) : null;
+  return { spatial, regionIds: payload.matched_region_candidates.filter(row => answers?.[`region:${row.id}`]?.choice === "requested").map(row => String(row.id)), artifactIds: payload.matched_artifact_candidates.filter(row => answers?.[`artifact:${row.id}`]?.choice === "requested").map(row => String(row.id)), year: selectedYear && yearChoices.includes(selectedYear) ? selectedYear : null, answer: booleanAnswer("answer"), safety: booleanAnswer("safety", 0.4), response: { answers: safeJevAnswers(value) }, httpStatus };
 }
 
 async function chatJson(url: string, key: string, model: string, payload: RouterPayload, timeoutMs: number) {
@@ -315,7 +327,7 @@ async function chatJson(url: string, key: string, model: string, payload: Router
   return JSON.parse(String(((await response.json() as any)).choices?.[0]?.message?.content || "{}"));
 }
 
-async function route(query: string, regions: any[], artifacts: any[]): Promise<GeoSearchPlanSet> {
+async function route(query: string, regions: any[], artifacts: any[], spatialContext?: SpatialInput, timer?: QueryTimer): Promise<GeoSearchPlanSet> {
   const payload: RouterPayload = { query, matched_region_candidates: regions.map(region => ({ id: region.id, name: region.name, type: region.region_type, state_name: region.state_name || null, country_name: region.country_name || null, state_code: region.state_code || null, country_code: region.country_code || null })), matched_artifact_candidates: artifacts.map(artifact => ({ id: String(artifact.id), name: String(artifact.name), feature_id: artifact.feature_id ? String(artifact.feature_id) : null })) };
   // Jev is primary. Cerebras and Luna are fallbacks for generative feature extraction.
   // Existing E2 deployments use CEREBRAS_KEY; retain the conventional name too
@@ -332,12 +344,24 @@ async function route(query: string, regions: any[], artifacts: any[]): Promise<G
   let routed = false;
   // Jev answered (even if it chose nothing): its region decision is final.
   let jevAnswered = false;
-  const routing: RoutingTrace = { selected_provider: null, selected_model: null, selected_artifact: null, selected_region_ids: [], selected_year: null, answer: false, safety: false, attempts: [] };
+  const routing: RoutingTrace = {
+    selected_provider: null, selected_model: null, selected_artifact: null, selected_region_ids: [], selected_year: null, answer: false, safety: false, attempts: [],
+    diagnostics: {
+      candidate_regions: regions.map((region) => ({ id: String(region.id), name: String(region.name), type: String(region.region_type) })),
+      candidate_artifacts: artifacts.map((artifact) => ({ id: String(artifact.id), name: String(artifact.name), feature_id: artifact.feature_id ? String(artifact.feature_id) : null })),
+      spatial_context: spatialContext ?? null,
+    },
+  };
+  timer?.beginRoutingTrace(routing);
+  if (spatialContext) payload.spatialContext = spatialContext;
+  let spatial: SpatialPlan | null = null;
   const recordAttempt = (attempt: RoutingAttempt) => {
     routing.attempts.push(attempt);
+    timer?.updateRoutingTrace(routing);
     console.log(JSON.stringify({ event: "routing_attempt", provider: attempt.provider, model: attempt.model, status: attempt.status, routed: attempt.routed, duration_ms: attempt.duration_ms, http_status: attempt.http_status ?? null, error: attempt.error ?? null }));
   };
   const applyJevChoice = (choice: JevChoice, provider: RoutingProvider, model: string) => {
+    spatial = choice.spatial ?? null;
     jevYear = choice.year;
     answer = choice.answer;
     safety = choice.safety;
@@ -346,7 +370,14 @@ async function route(query: string, regions: any[], artifacts: any[]): Promise<G
     jevAnswered = true;
     const selectedArtifacts = collapseOverlapping(artifacts.filter(row => choice.artifactIds.includes(String(row.id))), query, selectedRegions.map(row => String(row.name)));
     const artifact = selectedArtifacts[0] || null;
-    const didRoute = Boolean(region || artifact || choice.year);
+    routing.diagnostics = {
+      ...(routing.diagnostics ?? {}),
+      spatial_plan: spatial,
+      selected_artifacts: selectedArtifacts.map((item) => ({ id: String(item.id), name: String(item.name), feature_id: item.feature_id ? String(item.feature_id) : null })),
+      selected_regions: selectedRegions.map((item) => ({ id: String(item.id), name: String(item.name), type: String(item.region_type) })),
+      selected_year: choice.year,
+    };
+    const didRoute = Boolean(region || artifact || choice.year || spatial);
     if (didRoute) {
       plan = { features: selectedArtifacts.map(item => ({ feature_id: item.feature_id === "unknown" ? null : String(item.feature_id), feature_name: String(item.name), artifact_id: String(item.id), artifact_name: String(item.name) })), region_id: region ? String(region.id) : null, region_name: region ? String(region.name) : null, region_ids: selectedRegions.map(row => String(row.id)), region_names: selectedRegions.map(row => String(row.name)), artifact_id: artifact ? String(artifact.id) : null, artifact_name: artifact ? String(artifact.name) : null, year: choice.year };
       routed = true;
@@ -470,7 +501,13 @@ async function route(query: string, regions: any[], artifacts: any[]): Promise<G
   routing.answer = answer;
   routing.safety = safety;
   routing.selected_year = jevYear ?? plan.year ?? null;
-  return { ...primary, year: jevYear ?? plan.year ?? null, features: uniquePlans.length ? uniquePlans : [primary], answer, safety, routing };
+  routing.diagnostics = {
+    ...(routing.diagnostics ?? {}),
+    spatial_plan: spatial,
+    resolved_search_plan: uniquePlans.map((item) => ({ artifact_id: item.artifact_id ?? null, feature_name: item.feature_name, region_id: item.region_id, region_name: item.region_name, year: jevYear ?? plan.year ?? null, search_terms: item.search_terms })),
+  };
+  timer?.updateRoutingTrace(routing);
+  return { ...primary, year: jevYear ?? plan.year ?? null, features: uniquePlans.length ? uniquePlans : [primary], answer, safety, routing, spatial };
 }
 
 /** Jev can mark several overlapping catalog names as requested ("Palm Tree", "Palm", "Tree", "Palms"
@@ -507,16 +544,29 @@ export function collapseOverlapping(rows: any[], query: string, regionNames: str
   return kept.sort((a, b) => position(a) - position(b));
 }
 
-function resolveRegionConflicts(rows: any[]) {
+/**
+ * A larger region named with a smaller one inside it only qualifies it ("Sacramento, California"), so the
+ * smaller one is the search area and the larger one is dropped. A city and county sharing a name keep the city.
+ */
+export function resolveRegionConflicts(rows: any[]) {
   const priority: Record<string, number> = { country: 4, state: 3, city: 2, county: 1 };
-  return [...rows].sort((a, b) => (priority[String(b.region_type)] || 0) - (priority[String(a.region_type)] || 0)).filter((row, index, all) => !all.slice(0, index).some(higher => higher.region_type === "country" ? higher.country_code === row.country_code : higher.region_type === "state" ? higher.country_code === row.country_code && higher.state_code === row.state_code : higher.region_type === "city" && row.region_type === "county" && higher.country_code === row.country_code && higher.state_code === row.state_code && String(higher.name).toLowerCase() === String(row.name).toLowerCase()));
+  const sameCountry = (a: any, b: any) => !!a.country_code && a.country_code === b.country_code;
+  const sameState = (a: any, b: any) => sameCountry(a, b) && !!a.state_code && a.state_code === b.state_code;
+  const contains = (outer: any, inner: any) =>
+    outer.region_type === "country" ? inner.region_type !== "country" && sameCountry(outer, inner)
+    : outer.region_type === "state" ? (inner.region_type === "city" || inner.region_type === "county") && sameState(outer, inner)
+    : false;
+  const cityOfSameName = (city: any, county: any) => city.region_type === "city" && county.region_type === "county" && sameState(city, county) && String(city.name).toLowerCase() === String(county.name).toLowerCase();
+  return [...rows]
+    .sort((a, b) => (priority[String(b.region_type)] || 0) - (priority[String(a.region_type)] || 0))
+    .filter(row => !rows.some(other => other !== row && (contains(row, other) || cityOfSameName(other, row))));
 }
 
 /** Retrieval depth: candidates ranked per feature, stored artifact views
  * searched per feature, and the visual-distance cutoff (see lib/plans QUALITY). */
 export type SearchQuality = { candidates: number; vectors: number; maxDistance: number };
 
-export async function runGeoSearch(query: string, limit = 100, forcedRegionId: string | null = null, year: string | number | null = null, timer?: QueryTimer, method: SearchMethod = "name", h3R5?: string[], quality?: SearchQuality, attributeOptions?: FindAttributeOptions, h3R8?: string[], focusRegionId: string | null = null) {
+export async function runGeoSearch(query: string, limit = 100, forcedRegionId: string | null = null, year: string | number | null = null, timer?: QueryTimer, method: SearchMethod = "name", h3R5?: string[], quality?: SearchQuality, attributeOptions?: FindAttributeOptions, h3R8?: string[], focusRegionId: string | null = null, spatialContext?: { areas: PickedArea[]; addresses: PickedArea[]; limit: number }) {
   const time = <T>(stage: string, fn: () => Promise<T>) => (timer ? timer.stage(stage, fn) : fn());
   // Attribute gate 1 (JEV intent) starts now and runs alongside catalog lookup and routing.
   const gateAttempts: GateAttempt[] = [];
@@ -537,7 +587,13 @@ export async function runGeoSearch(query: string, limit = 100, forcedRegionId: s
   // Stored artifact vectors are only needed for retrieval; fetch them while
   // the router decides instead of before it.
   const embedsPending = routerCatalog.embeddings(matched.artifacts.map((artifact: any) => String(artifact.id))).catch(() => new Map<string, number[][]>());
-  const routed = await time("routing_llm", () => route(query, matched.regions, matched.artifacts));
+  const routed = await time("routing_llm", () => route(query, matched.regions, matched.artifacts, spatialContext && {
+    areaCount: spatialContext.areas.length, addressCount: spatialContext.addresses.length, focus: Boolean(focusRegionId),
+  }, timer));
+  timer?.updateRoutingDiagnostics({
+    resolved_region: matched.regions.map((item: any) => ({ id: String(item.id), name: String(item.name), type: String(item.region_type) })),
+    resolved_artifacts: matched.artifacts.map((item: any) => ({ id: String(item.id), name: String(item.name), feature_id: item.feature_id ? String(item.feature_id) : null })),
+  });
   // A positive JEV safety decision is terminal. Do not retrieve features or
   // invoke an answer model after that decision.
   if (routed.safety) {
@@ -569,7 +625,6 @@ export async function runGeoSearch(query: string, limit = 100, forcedRegionId: s
   if (resolvedYear !== null && resolvedYear !== undefined && resolvedYear !== "" && Number.isInteger(Number(resolvedYear))) probeBase.push(["year", "Eq", String(resolvedYear)]);
   if (h3R5?.length) probeBase.push(["h3_r5", "In", h3R5]);
   if (h3R8?.length) probeBase.push(["h3_r8", "In", h3R8]);
-  if (h3R8?.length) probeBase.push(["h3_r8", "In", h3R8]);
   const { filters: attributeFilters, report: filtersReport } = await time("attribute_gate_values", () => resolveAttributeFilters({
     query,
     explicit: attributeIntent.explicit,
@@ -584,6 +639,84 @@ export async function runGeoSearch(query: string, limit = 100, forcedRegionId: s
     routed.routing.attempts.push({ provider: attempt.provider, model: `attribute-gate:${attempt.gate}`, status: attempt.status, routed: attempt.status === "ok", duration_ms: attempt.duration_ms, error: attempt.error ?? null, response: { questions: attempt.questions } });
   }
   const unapplied = new Set<string>();
+  const spatialPlan = routed.spatial;
+  if (spatialPlan && spatialContext) {
+    const selected = new Map(matched.artifacts.map((row) => [String(row.id), row]));
+    const direct = new Map<string, Promise<DirectArtifact | null>>();
+    const directFor = (id: string) => {
+      if (!direct.has(id)) direct.set(id, directArtifactById(id));
+      return direct.get(id)!;
+    };
+    const started = Date.now();
+    try {
+      const inferred = attributeFilters.filter((filter) => filter.source !== "where" &&
+        !(spatialPlan.operation === "compare" && filter.key === spatialPlan.metric));
+      const reference = "reference" in spatialPlan ? spatialPlan.reference : null;
+      const assignments = reference?.startsWith("artifact:") && inferred.length
+        ? await time("spatial_filter_assignment", () => decide(spatialFilterQuestions([...new Set(inferred.map((filter) => filter.key))]), {
+          query, reference: selected.get(reference.slice(9))?.name,
+          target: "target" in spatialPlan ? selected.get(spatialPlan.target.slice(9))?.name : "Comparison subjects",
+          conditions: inferred.map((filter) => ({ ...filter, label: ATTRIBUTE_BY_KEY[filter.key]?.label })),
+        }, 2500, undefined, false)) : null;
+      const scopeOf = (key: string) => reference?.startsWith("artifact:") ? assignments?.answers[`scope:${key}`]?.choice : "target";
+      if (inferred.some((filter) => !["target", "reference", "both", "neither"].includes(scopeOf(filter.key) ?? ""))) {
+        throw new Error("Missing spatial filter assignment");
+      }
+      const targetFilters = [...attributeIntent.explicit, ...inferred.filter((filter) => ["target", "both"].includes(scopeOf(filter.key) ?? ""))];
+      const referenceFilters = inferred.filter((filter) => ["reference", "both"].includes(scopeOf(filter.key) ?? ""));
+      timer?.updateRoutingDiagnostics({
+        spatial_filter_assignments: assignments?.answers ?? {},
+        target_filters: targetFilters,
+        reference_filters: referenceFilters,
+        spatial_execution: { status: "running", reference: reference ?? null, target: "target" in spatialPlan ? spatialPlan.target : null },
+      });
+      const features = await time("spatial_execution", () => executeSpatial(spatialPlan, {
+        ...spatialContext,
+        limit: spatialContext.limit,
+        region: primaryRegion,
+        year: resolvedYear,
+        targetFilters,
+        referenceFilters,
+        artifactName: (id) => String(selected.get(id)?.name ?? ""),
+        regionCenter: async (id) => (await getRegionById(id === "focus" ? focusRegionId! : id))?.center ?? null,
+        recordTiming: (stage, ms) => timer?.record(stage, ms),
+        retrieve: async (id, scope, pageLimit) => {
+          const artifact = selected.get(id);
+          if (!artifact) return null;
+          if (DIRECT_METHODS.has(String(artifact.method))) {
+            const recordSource = await directFor(id);
+            return recordSource ? mappedRecords(recordSource, scope, "rows", pageLimit) : null;
+          }
+          const vectors = embeds.get(id);
+          if (!vectors?.length || toTurbopuffer(scope.filters).length !== scope.filters.length) return null;
+          const feature = { feature_id: artifact.feature_id, feature_name: String(artifact.name), artifact_id: id, region_id: scope.region?.id ?? null, region_name: scope.region?.name ?? null, engine: "turbopuffer" as const, search_terms: [] };
+          return strongestMatches((await executeFeatureSearch(feature, scope.region, pageLimit, scope.year, vectors, "name", null, undefined, null, undefined, scope.filters, scope.cells, true)).geojson.features);
+        },
+        aggregate: async (id, scope) => {
+          const artifact = await directFor(id);
+          return artifact ? mappedRecords(artifact, scope, "counts") : null;
+        },
+      }));
+      timer?.updateRoutingDiagnostics({ spatial_execution: { status: features === null ? "fallback" : "applied", result_count: features?.length ?? 0, duration_ms: Date.now() - started } });
+      console.log(JSON.stringify({ event: "discover_spatial", operation: spatialPlan.operation, status: features === null ? "fallback" : "ok", returned: features?.length, duration_ms: Date.now() - started }));
+      if (features !== null) return {
+        query, method, searchPlan, region: primaryRegion,
+        regions: primaryRegion ? [{ id: String(primaryRegion.id), name: String(primaryRegion.name), layer: String(primaryRegion.region_type) }] : [],
+        artifacts: [], geojson: { type: "FeatureCollection", features }, count: features.length,
+        engineAvailable: true, timings: timer?.all() ?? [], safety: false, answer: routed.answer,
+        filters: { ...filtersReport, applied: targetFilters.map(describe), where: toWhere(targetFilters) },
+        attributeFilters: targetFilters, spatialApplied: true,
+      };
+    } catch (error) {
+      timer?.updateRoutingDiagnostics({ spatial_execution: { status: "error", error: errorText(error), duration_ms: Date.now() - started } });
+      console.log(JSON.stringify({ event: "discover_spatial", operation: spatialPlan.operation, status: "error", error: errorText(error), duration_ms: Date.now() - started }));
+    }
+  }
+  if (spatialContext && (spatialContext.areas.length || spatialContext.addresses.length)) {
+    return { query, method, searchPlan, region: primaryRegion, regions: [], artifacts: [],
+      geojson: { type: "FeatureCollection", features: [] }, count: 0, engineAvailable: true,
+      timings: timer?.all() ?? [], safety: false, answer: routed.answer, filters: filtersReport, attributeFilters };
+  }
   // "Are permits growing by month?" is a ledger question: civic records are only a sample to show.
   const ledgerQuestion = asksAboutAmount(query);
   // Retrieve a full page for each intent, then round-robin the merged rows so
@@ -641,6 +774,21 @@ export async function runGeoSearch(query: string, limit = 100, forcedRegionId: s
   const selectedRegions = routed.region_ids?.length ? matched.regions.filter((row: any) => routed.region_ids?.includes(String(row.id))) : (resolved[0]?.region ? [resolved[0].region] : []);
   const selectedArtifactIds = new Set(plans.map(plan => plan.artifact_id).filter((id): id is string => Boolean(id)));
   return { query, method, searchPlan, region: resolved[0]?.region || null, regions: selectedRegions.map((row: any) => ({ id: String(row.id), name: String(row.name), layer: String(row.region_type), state_name: row.state_name || undefined, country_name: row.country_name || undefined })), features: [], artifacts: matched.artifacts.filter((artifact: any) => selectedArtifactIds.has(String(artifact.id))).map((artifact: any) => ({ id: String(artifact.id), name: String(artifact.name), feature_id: artifact.feature_id ? String(artifact.feature_id) : null, method: artifact.method ? String(artifact.method) : null })), geojson, count: geojson.features.length, engineAvailable: true, timings, safety: false, answer: routed.answer, filters, attributeFilters, regionFallback };
+}
+
+/**
+ * A spatial search ranks what it finds by distance, so a weak visual match next to the reference would
+ * outrank a clear one a block away. Keep the matches close to the best one found (and never fewer than
+ * 25, so sparse areas still answer).
+ */
+function strongestMatches(features: any[]) {
+  const scored = features.map((feature) => Number(feature?.properties?.distance)).filter((d) => Number.isFinite(d)).sort((a, b) => a - b);
+  if (scored.length <= 25) return features;
+  const cutoff = Math.max(scored[0] + 0.06, scored[24]);
+  return features.filter((feature) => {
+    const d = Number(feature?.properties?.distance);
+    return !Number.isFinite(d) || d <= cutoff;
+  });
 }
 
 async function searchFootprintsNature(
@@ -732,8 +880,10 @@ async function executeFeatureSearch(
   quality?: SearchQuality,
   attributeFilters: AttributeFilter[] = [],
   h3R8?: string[],
+  strictRegion = false,
 ) {
   const tpufAttributeFilters = toTurbopuffer(attributeFilters);
+  const resultAttributes = [...new Set([...RESULT_ATTRIBUTES, ...attributeFilters.map((filter) => filter.key)])];
   const terms = method === "terms" ? Array.from(new Set((plan.search_terms.length ? plan.search_terms : [plan.feature_name]).map(String).filter(Boolean))).slice(0, 6) : [plan.feature_name];
   // Higher quality searches more of a feature's stored views and merges them.
   const views = Math.max(1, quality?.vectors ?? 1);
@@ -744,7 +894,7 @@ async function executeFeatureSearch(
   const footprintsPending = artifactType === "footprints_nature" && taxonId !== null && Number.isInteger(taxonId) && !h3R8?.length
     ? searchFootprintsNature(plan, region, year, limit, taxonId, attributeFilters).catch(() => [] as any[])
     : Promise.resolve([] as any[]);
-  const searches = await Promise.all(terms.flatMap((term) => vectors.map((vector) => searchVisualGeojson({ query: term, regionId: region?.id, year: year ?? null, limit: Math.min(1200, Math.max(limit, 200)), vector, h3R5, h3R8, candidates: quality?.candidates, maxDistance: quality?.maxDistance, attributeFilters: tpufAttributeFilters }))));
+  const searches = await Promise.all(terms.flatMap((term) => vectors.map((vector) => searchVisualGeojson({ query: term, regionId: region?.id, year: year ?? null, limit: strictRegion ? limit : Math.min(1200, Math.max(limit, 200)), vector, h3R5, h3R8, candidates: quality?.candidates, maxDistance: quality?.maxDistance, attributeFilters: tpufAttributeFilters, strictRegion, attributes: resultAttributes }))));
   const seen = new Set<string>();
   const merged = searches.flatMap((search) => search.features).filter((item: any) => {
     const key = String(item.id || item.properties?.source_id || `${item.geometry?.coordinates?.[0]}:${item.geometry?.coordinates?.[1]}`);

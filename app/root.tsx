@@ -1,6 +1,7 @@
 import { isRouteErrorResponse, Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
 import type { Route } from "./+types/root";
 import { getSessionUser } from "../server/auth";
+import Tracking from "./components/Tracking";
 import "./app.css";
 
 export const links: Route.LinksFunction = () => [
@@ -11,7 +12,7 @@ export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
   {
     rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..700,0..100;1,9..144,300..700,0..100&family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&display=swap",
+    href: "https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&display=swap",
   },
 ];
 
@@ -44,7 +45,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return <Outlet />;
+  return (
+    <>
+      <Outlet />
+      <Tracking />
+    </>
+  );
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

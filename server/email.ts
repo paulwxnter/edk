@@ -1,5 +1,6 @@
 // Transactional email through Cloudflare Email Sending (the EMAIL send_email binding).
 import { env } from "cloudflare:workers";
+import { FREE_CU } from "../app/lib/pricing";
 
 const escape = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -26,6 +27,6 @@ export async function sendVerificationEmail(to: string, name: string, url: strin
     to,
     subject: "Verify your email for EDK",
     text: `Hi${name ? ` ${name}` : ""},\n\nConfirm your email to finish creating your EDK account:\n${url}\n\nIf you didn't sign up, ignore this email.\n\nEDK · edk.earth`,
-    html: layout("Confirm your email", `Hi${name ? ` ${escape(name)}` : ""}, confirm this address to finish creating your EDK account. Your 500 free CU are waiting. If you didn't sign up, you can ignore this email.`, { label: "Verify email", url }),
+    html: layout("Confirm your email", `Hi${name ? ` ${escape(name)}` : ""}, confirm this address to finish creating your EDK account. You get ${FREE_CU} free CU every month. If you didn't sign up, you can ignore this email.`, { label: "Verify email", url }),
   });
 }

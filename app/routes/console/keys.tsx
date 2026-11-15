@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import { Form, useActionData, useNavigation } from "react-router";
+import { Form, Link, useActionData, useNavigation } from "react-router";
 import type { Route } from "./+types/keys";
 import { useCopy } from "~/components/copy";
-import { EMBED } from "~/lib/agents";
 import { getSessionUser } from "../../../server/auth";
 import { createApiKey, listApiKeys, revokeApiKey } from "../../../server/store";
 
@@ -27,14 +26,11 @@ export async function action({ request, context }: Route.ActionArgs) {
     await revokeApiKey(db, user.id, String(form.get("id")));
     return { revoked: true as const };
   }
-  const kind = form.get("kind") === "publishable" ? "publishable" : "secret";
-  const origins = String(form.get("origins") || "").split(/[\s,]+/).filter(Boolean);
-  for (const o of origins) {
-    if (!/^https?:\/\/(\*\.)?[a-z0-9.-]+(:\d+)?$/i.test(o.replace(/\/+$/, ""))) return { error: `"${o}" is not an origin like https://example.com` };
-  }
+  const kind = "secret" as const;
+  const origins: string[] = [];
   const existing = await listApiKeys(db, user.id);
   if (existing.length >= 25) return { error: "You can have up to 25 keys. Revoke one first." };
-  const created = await createApiKey(db, user.id, String(form.get("name") || "").trim() || (kind === "secret" ? "Secret key" : "Embed key"), kind, origins);
+  const created = await createApiKey(db, user.id, String(form.get("name") || "").trim() || "Secret key", kind, origins);
   return { created: { key: created.key, kind } };
 }
 
@@ -43,7 +39,6 @@ const fmt = (ms: number | null) => (ms ? new Date(ms).toLocaleDateString("en-US"
 export default function Keys({ loaderData }: Route.ComponentProps) {
   const data = useActionData<typeof action>();
   const nav = useNavigation();
-  const [kind, setKind] = useState<"secret" | "publishable">("secret");
   const { copied, copy } = useCopy();
   const [shown, setShown] = useState<{ key: string; kind: string } | null>(null);
   useEffect(() => {
@@ -55,7 +50,7 @@ export default function Keys({ loaderData }: Route.ComponentProps) {
       <div className="console-head">
         <div>
           <h1>API Keys</h1>
-          <p>Secret keys call the API from servers, the CLI, the SDK and MCP. Publishable keys run live searches in embedded maps.</p>
+          <p>Secret keys call the API from servers, the CLI, the SDK and MCP. Maps for other sites have their own keys, under <Link to="/console/embeds">Embeds</Link>.</p>
         </div>
       </div>
 
@@ -63,23 +58,8 @@ export default function Keys({ loaderData }: Route.ComponentProps) {
         <h2>Create a key</h2>
         <p>The full key is shown once. Store it in your environment as EDK_API_KEY.</p>
         <Form method="post" className="pg-form">
-          <div className="grid-2">
-            <label className="field"><span>Name</span><input className="input" name="name" placeholder={kind === "secret" ? "Production server" : "Docs site embed"} maxLength={60} /></label>
-            <label className="field">
-              <span>Type</span>
-              <select className="select" name="kind" value={kind} onChange={(e) => setKind(e.target.value as any)}>
-                <option value="secret">Secret (edk_sk_…)</option>
-                <option value="publishable">Publishable for embeds (edk_pk_…)</option>
-              </select>
-            </label>
-          </div>
-          {kind === "publishable" ? (
-            <label className="field">
-              <span>Allowed sites</span>
-              <input className="input" name="origins" placeholder="https://example.com, https://*.example.com" />
-              <small>Pages allowed to embed live searches with this key. Leave empty to allow any site.</small>
-            </label>
-          ) : null}
+          <input type="hidden" name="kind" value="secret" />
+          <label className="field"><span>Name</span><input className="input" name="name" placeholder="Production server" maxLength={60} /></label>
           <div className="row">
             <button className="btn btn-primary" type="submit" disabled={nav.state !== "idle"}>Create key</button>
           </div>
@@ -92,7 +72,7 @@ export default function Keys({ loaderData }: Route.ComponentProps) {
               <button type="button" className="btn btn-sm" onClick={() => copy(shown.key)}>{copied ? "Copied" : "Copy"}</button>
             </div>
             <p className="faint" style={{ fontSize: ".82rem", margin: ".6rem 0 0" }}>
-              {shown.kind === "secret" ? "Copy it now. You won't see it again." : <>Embed with <code>{`${EMBED}/?key=${shown.key.slice(0, 12)}…&q=your+query`}</code></>}
+              Copy it now. You won't see it again.
             </p>
           </>
         ) : null}

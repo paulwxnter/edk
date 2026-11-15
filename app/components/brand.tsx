@@ -26,11 +26,11 @@ export function Wordmark({ height = 20 }: { height?: number }) {
   );
 }
 
-export function Logo({ to = "/", size = 28 }: { to?: string | null; size?: number }) {
+/** The EDK logo is the wordmark alone. `size` is its height in pixels. */
+export function Logo({ to = "/", size = 22 }: { to?: string | null; size?: number }) {
   const inner = (
     <>
-      <Mark size={size} />
-      <Wordmark height={Math.round(size * 0.72)} />
+      <Wordmark height={size} />
       <span className="sr-only">EDK</span>
     </>
   );

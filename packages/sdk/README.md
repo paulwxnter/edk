@@ -1,6 +1,6 @@
 # @edks/sdk
 
-The EDK SDK. EDK is a compass for machines: one API for questions about the physical world (places, imagery, area facts and trends).
+The SDK for EDK-1, a spatial model that gives humans and machines a compass for the world: position, condition, motion, navigation, stream and vision.
 
 ```sh
 npm install @edks/sdk
@@ -10,15 +10,13 @@ npm install @edks/sdk
 import { EDK } from "@edks/sdk";
 
 const edk = new EDK(); // reads EDK_API_KEY
-const { data, usage, embed_url } = await edk.search("bridges in Pittsburgh", { limit: 10 });
 
-console.log(data.answer);
-console.log(data.geojson.features.length, "results,", usage.cu, "CU");
-console.log("On the Atlas:", embed_url);
+const { data, usage, embed_url } = await edk.discover("bridges in Pittsburgh", { limit: 10 });
+const spot = await edk.inspect({ lat: 40.4406, lng: -79.9959 });
 ```
 
-Also: `inspect({ lat, lng })`, `regions({ q })`, `geocode(q)`, `catalog({ q })`, `sources({ keys })`, `trends.series({ feature, regions, tf })`, `usage()`, `result(id)`.
+`discover(query, { limit, reasoning, answer, areas, focus })`, `inspect({ lat, lng })`, `result(id)`, `usage()`. Errors throw `EDKError` with `status`.
 
-Errors throw `EDKError` with `status` and `message`. Works in Node 18+, Bun, Deno and Workers.
+`reasoning` is `"fast"` (default), `"low"`, `"medium"` or `"max"`: how closely EDK-1 studies its results before returning them. Studied results carry `boxed_image_url`, the picture with the feature outlined. Medium and max cost twice the CU.
 
-Sign up at https://edk.earth (500 free CU) and create a key in the console. Docs: https://edk.earth/docs
+Sign up at https://edk.earth (120 free CU every month). Docs: https://edk.earth/docs

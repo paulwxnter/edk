@@ -1,5 +1,6 @@
 // cdn.edk.earth: serves result media from signed paths (/i/<sig>/<base64url source>), cached at the edge.
 import { verifyMediaPath } from "lib/locate/media-proxy";
+import { renderBoxed, verifyBoxedPath } from "lib/locate/vision";
 
 const MEDIA = /^(image|video)\//;
 const YEAR = 31_536_000;
@@ -9,6 +10,8 @@ export async function handleCdn(request: Request, ctx: ExecutionContext) {
   if (url.pathname === "/tiles/planet.pmtiles") return handleTiles(request, url, ctx);
   if (request.method !== "GET" && request.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
   if (url.pathname === "/" || url.pathname === "") return new Response("EDK CDN", { headers: { "content-type": "text/plain" } });
+  const boxed = url.pathname.match(/^\/b\/([A-Za-z0-9_-]{22})\/([A-Za-z0-9_-]+)\/(\d{1,4}-\d{1,4}-\d{1,4}-\d{1,4})\/([A-Za-z0-9_-]*)$/);
+  if (boxed) return handleBoxed(url, boxed, ctx);
   const m = url.pathname.match(/^\/i\/([A-Za-z0-9_-]{22})\/([A-Za-z0-9_-]+)$/);
   const source = m ? verifyMediaPath(m[1], m[2]) : null;
   if (!source) return new Response("Not found", { status: 404 });
@@ -31,6 +34,23 @@ export async function handleCdn(request: Request, ctx: ExecutionContext) {
       "x-content-type-options": "nosniff",
       ...(upstream.headers.get("content-length") ? { "content-length": upstream.headers.get("content-length")! } : {}),
     },
+  });
+  ctx.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
+}
+
+/** /b/<sig>/<source>/<box>/<label>: a result image with its box drawn on, rendered once and cached. */
+async function handleBoxed(url: URL, match: RegExpMatchArray, ctx: ExecutionContext) {
+  const target = verifyBoxedPath(match[1], match[2], match[3], match[4]);
+  if (!target) return new Response("Not found", { status: 404 });
+  const cache = (caches as unknown as { default: Cache }).default;
+  const cacheKey = new Request(`${url.origin}${url.pathname}`, { method: "GET" });
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+  const jpeg = await renderBoxed(target.source, target.box, target.label).catch(() => null);
+  if (!jpeg) return new Response("Media unavailable", { status: 502, headers: { "cache-control": "public, max-age=60" } });
+  const response = new Response(jpeg as unknown as BodyInit, {
+    headers: { "content-type": "image/jpeg", "cache-control": `public, max-age=${YEAR}, immutable`, "access-control-allow-origin": "*", "x-content-type-options": "nosniff" },
   });
   ctx.waitUntil(cache.put(cacheKey, response.clone()));
   return response;

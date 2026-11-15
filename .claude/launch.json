@@ -1,0 +1,43 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "edk",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 5173
+    },
+    {
+      "name": "edk-alt",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "react-router",
+        "dev",
+        "--port",
+        "5179",
+        "--strictPort"
+      ],
+      "port": 5179,
+      "autoPort": false
+    },
+    {
+      "name": "oracle",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "--prefix",
+        "../edk-internal",
+        "wrangler",
+        "dev",
+        "--config",
+        "../edk-internal/wrangler.json",
+        "--port",
+        "8790"
+      ],
+      "port": 8790,
+      "autoPort": false
+    }
+  ]
+}

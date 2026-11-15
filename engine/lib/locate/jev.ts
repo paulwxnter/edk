@@ -94,7 +94,7 @@ function safeParse(text: string): unknown {
  * Asks the questions of JEV, then the gateway, then the OpenAI decision model. Returns the first
  * answer, or null when none of them answers. `attempts` receives one entry per provider tried.
  */
-export async function decide(questions: Record<string, unknown>, state: unknown, timeoutMs: number, attempts?: DecisionAttempt[]): Promise<DecisionResult | null> {
+export async function decide(questions: Record<string, unknown>, state: unknown, timeoutMs: number, attempts?: DecisionAttempt[], allowOpenAi = true): Promise<DecisionResult | null> {
   const jevTargets: { provider: DecisionProvider; url: string; key?: string; model: string }[] = [
     { provider: "jev", url: "https://api.typesafe.ai/v1/systemone", key: process.env.JEV_API_KEY, model: process.env.JEV_MODEL || "jev-latest" },
     { provider: "gateway_jev", url: "https://ai-gateway.vercel.sh/v1/evaluate", key: process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_AI_GATEWAY, model: "typesafe-ai/jev" },
@@ -112,7 +112,7 @@ export async function decide(questions: Record<string, unknown>, state: unknown,
       note({ provider: t.provider, model: t.model, status: "error", duration_ms: Date.now() - started, http_status: error instanceof HttpError ? error.httpStatus : null, error: reason(error) });
     }
   }
-  if (openAiKey()) {
+  if (allowOpenAi && openAiKey()) {
     const started = Date.now();
     try {
       // The fallback gets a little longer: it is only reached after JEV has already used its budget.

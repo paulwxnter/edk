@@ -44,7 +44,9 @@ export function getAuth(db: D1Database) {
 
 export async function getSessionUser(db: D1Database, request: Request) {
   const session = await getAuth(db).api.getSession({ headers: request.headers }).catch(() => null);
-  return session?.user ? { id: session.user.id, email: session.user.email, name: session.user.name } : null;
+  if (!session?.user) return null;
+  const joined = new Date(session.user.createdAt as unknown as string).getTime();
+  return { id: session.user.id, email: session.user.email, name: session.user.name, createdAt: Number.isFinite(joined) ? Math.floor(joined / 1000) : null };
 }
 
 export type SessionUser = NonNullable<Awaited<ReturnType<typeof getSessionUser>>>;

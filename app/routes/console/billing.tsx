@@ -1,10 +1,15 @@
 import { useState } from "react";
-import { Form, redirect, useActionData, useNavigation } from "react-router";
+import { Form, Link, redirect, useActionData, useNavigation } from "react-router";
 import type { Route } from "./+types/billing";
-import { CU_PRICE_USD, FREE_CU, MAX_TOPUP_USD, MIN_TOPUP_USD, TOPUP_PRESETS, UNITS_PER_CU, cuForDollars, formatCu, formatUsd } from "~/lib/pricing";
+import { CU_DEFINITION, CU_PRICE_USD, FREE_CU, SIGNALS_MONTHLY_CENTS, MAX_TOPUP_USD, MIN_TOPUP_USD, TOPUP_PRESETS, UNITS_PER_CU, cuForDollars, formatCu, formatUsd } from "~/lib/pricing";
+import { TIERS, nextTier } from "~/lib/tiers";
 import { getSessionUser } from "../../../server/auth";
 import { dailyUsage, listPurchases, recentUsage, saveSettings, spendable } from "../../../server/store";
-import { createTopUp, settleCheckout } from "../../../server/stripe";
+import { createTopUp, getSignalsPlan, openSignalsBilling, settleCheckout, type SignalsPlan } from "../../../server/stripe";
+import { hasSignalsGrant } from "../../../server/signals-access";
+
+type BillingTab = "usage" | "signals";
+const tabOf = (v: string | null): BillingTab => (v === "signals" ? "signals" : "usage");
 
 export const meta = () => [{ title: "Billing & Usage · EDK Console" }];
 
@@ -24,20 +29,36 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     const settled = await settleCheckout(db, sessionId, user.id).catch(() => ({ paid: false }));
     checkout = settled.paid ? "credited" : "pending";
   }
-  const [account, days, purchases, recent] = await Promise.all([spendable(db, user.id), dailyUsage(db, user.id, 30), listPurchases(db, user.id), recentUsage(db, user.id, 20)]);
-  return { balance: account.balance, used: account.used, settings: account.settings, days, purchases, recent, checkout, mode: (process.env.STRIPE_MODE as string) === "live" ? "live" : "test" };
+  const tab = tabOf(url.searchParams.get("tab"));
+  // Stripe is only asked about Signals when its tab is open.
+  const signalsPending: Promise<{ plan: SignalsPlan | null; granted: boolean; failed: boolean }> = tab === "signals"
+    ? Promise.all([getSignalsPlan(db, user.id), hasSignalsGrant(db, user.id).catch(() => false)])
+        .then(([plan, granted]) => ({ plan, granted, failed: false }))
+        .catch(() => ({ plan: null, granted: false, failed: true }))
+    : Promise.resolve({ plan: null, granted: false, failed: false });
+  const [account, days, purchases, recent, signals] = await Promise.all([spendable(db, user.id), dailyUsage(db, user.id, 30), listPurchases(db, user.id), recentUsage(db, user.id, 20), signalsPending]);
+  return { tab, signals, balance: account.balance, free: account.free, used: account.used, settings: account.settings, tierId: account.tier.id, added: account.added, days, purchases, recent, checkout, mode: (process.env.STRIPE_MODE as string) === "live" ? "live" : "test" };
 }
 
 export async function action({ request, context }: Route.ActionArgs) {
   const db = context.cloudflare.env.DB;
   const user = await requireUser(request, db);
   const form = await request.formData();
+  if (form.get("intent") === "signals") {
+    if (await hasSignalsGrant(db, user.id).catch(() => false)) return redirect("/signals");
+    try {
+      return redirect(await openSignalsBilling(db, user, new URL(request.url).origin, "/console/billing?tab=signals"));
+    } catch (error) {
+      console.error("[edk] Signals billing failed", error instanceof Error ? error.message : error);
+      return { signalsError: "Signals billing is temporarily unavailable. Try again shortly." };
+    }
+  }
   if (form.get("intent") === "limits") {
     const parse = (v: FormDataEntryValue | null, max: number) => {
       const n = Number(String(v ?? "").trim());
       return String(v ?? "").trim() === "" || !Number.isFinite(n) || n <= 0 ? null : Math.min(max, Math.floor(n));
     };
-    await saveSettings(db, user.id, { max_results: parse(form.get("max_results"), 60), monthly_cu_cap: parse(form.get("monthly_cu_cap"), 10_000_000) });
+    await saveSettings(db, user.id, { max_results: parse(form.get("max_results"), 200), monthly_cu_cap: parse(form.get("monthly_cu_cap"), 10_000_000) });
     return { saved: true as const };
   }
   const usd = Number(form.get("amount"));
@@ -87,7 +108,9 @@ function UsageChart({ days }: { days: { day: string; units: number; calls: numbe
 const when = (ms: number) => new Date(ms).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 export default function Billing({ loaderData }: Route.ComponentProps) {
-  const { balance, used, settings, days, purchases, recent, checkout, mode } = loaderData;
+  const { tab, signals, balance, free, used, settings, days, purchases, recent, checkout, mode, tierId, added } = loaderData;
+  const tier = TIERS.find((t) => t.id === tierId) ?? TIERS[0];
+  const next = nextTier(tier);
   const data = useActionData<typeof action>();
   const nav = useNavigation();
   const [amount, setAmount] = useState(String(MIN_TOPUP_USD));
@@ -100,19 +123,29 @@ export default function Billing({ loaderData }: Route.ComponentProps) {
       <div className="console-head">
         <div>
           <h1>Billing &amp; Usage</h1>
-          <p>A Compute Unit covers five locations or areas in your results. New accounts start with {FREE_CU} free CU.</p>
+          <p>{tab === "signals" ? "Your EDK Signals plan: data by place and over time, the Data Viewer and exports." : `${CU_DEFINITION} Every account gets ${FREE_CU} free CU each month.`}</p>
         </div>
         {mode === "test" ? <span className="tag is-ochre">Stripe test mode</span> : null}
       </div>
+
+      <nav className="tabs billing-tabs" aria-label="Billing sections">
+        <Link to="?tab=usage" className={tab === "usage" ? "active" : undefined} aria-current={tab === "usage" ? "page" : undefined} preventScrollReset>Usage</Link>
+        <Link to="?tab=signals" className={tab === "signals" ? "active" : undefined} aria-current={tab === "signals" ? "page" : undefined} preventScrollReset>Signals</Link>
+      </nav>
+
+      {tab === "signals" ? (
+        <SignalsTab signals={signals} busy={nav.state !== "idle" && nav.formData?.get("intent") === "signals"} error={data && "signalsError" in data ? data.signalsError ?? null : null} />
+      ) : (
+      <>
 
       {checkout === "credited" ? <div className="notice is-ok" style={{ marginBottom: "1rem" }}>Payment received. Your credits are in your balance.</div> : null}
       {checkout === "pending" ? <div className="notice" style={{ marginBottom: "1rem" }}>We're confirming your payment. Credits appear as soon as Stripe confirms it.</div> : null}
       {checkout === "canceled" ? <div className="notice" style={{ marginBottom: "1rem" }}>Checkout canceled. Nothing was charged.</div> : null}
 
       <div className="stats">
-        <div className="stat"><span className="label">Balance</span><strong>{formatCu(balance)}</strong><small>CU available</small></div>
+        <div className="stat"><span className="label">Balance</span><strong>{formatCu(balance)}</strong><small>CU available · {formatCu(free)} free left this month</small></div>
         <div className="stat"><span className="label">This month</span><strong>{formatCu(used)}</strong><small>CU used{settings.monthly_cu_cap ? ` of ${settings.monthly_cu_cap.toLocaleString("en-US")} limit` : ""}</small></div>
-        <div className="stat"><span className="label">Value</span><strong>{formatUsd((balance / UNITS_PER_CU) * CU_PRICE_USD)}</strong><small>at {formatUsd(CU_PRICE_USD * 1000)} per 1,000 CU</small></div>
+        <div className="stat"><span className="label">Tier</span><strong>{tier.name}</strong><small>{tier.maxResults} results per request · {tier.concurrency} at once</small></div>
       </div>
 
       <section className="panel">
@@ -126,7 +159,7 @@ export default function Billing({ loaderData }: Route.ComponentProps) {
       <div className="grid-2" style={{ marginTop: "1rem" }}>
         <section className="panel">
           <h2>Add credits</h2>
-          <p>Pay once with Stripe. Credits never expire. Minimum {formatUsd(MIN_TOPUP_USD)}.</p>
+          <p>Pay once with Stripe, from {formatUsd(MIN_TOPUP_USD)}. Credits never expire, and adding more unlocks higher tiers.</p>
           <Form method="post" className="pg-form">
             <div className="presets">
               {TOPUP_PRESETS.map((p) => (
@@ -134,7 +167,7 @@ export default function Billing({ loaderData }: Route.ComponentProps) {
               ))}
             </div>
             <label className="field">
-              <span>Amount (USD)</span>
+              <span>Custom amount (USD)</span>
               <input className="input" name="amount" type="number" min={MIN_TOPUP_USD} max={MAX_TOPUP_USD} step="1" value={amount} onChange={(e) => setAmount(e.target.value)} />
               <small>{valid ? `${cuForDollars(usd).toLocaleString("en-US")} CU` : `Enter ${formatUsd(MIN_TOPUP_USD)} to ${formatUsd(MAX_TOPUP_USD)}`}</small>
             </label>
@@ -150,8 +183,8 @@ export default function Billing({ loaderData }: Route.ComponentProps) {
             <input type="hidden" name="intent" value="limits" />
             <label className="field">
               <span>Max results per search</span>
-              <input className="input" name="max_results" type="number" min={1} max={60} defaultValue={settings.max_results ?? ""} placeholder="60" />
-              <small>Applies to the API, playground and embeds (1–60).</small>
+              <input className="input" name="max_results" type="number" min={1} max={tier.maxResults} defaultValue={settings.max_results ?? ""} placeholder={String(tier.maxResults)} />
+              <small>Up to {tier.maxResults} on {tier.name}. Applies to the API, playground and embeds.</small>
             </label>
             <label className="field">
               <span>Monthly CU limit</span>
@@ -167,6 +200,29 @@ export default function Billing({ loaderData }: Route.ComponentProps) {
       </div>
 
       <section className="panel" style={{ marginTop: "1rem" }}>
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <h2>Tiers</h2>
+          <span className="faint" style={{ fontSize: ".82rem" }}>{next ? `${formatUsd(Math.max(0, (next.unlockDollars ?? 0) - added))} more unlocks ${next.name}` : "Highest self-serve tier"}</span>
+        </div>
+        <p>Credits you add over time unlock higher tiers. Tiers raise how many results one request returns and how many requests run at once.</p>
+        <div className="table-wrap">
+          <table className="table">
+            <thead><tr><th>Tier</th><th>Unlock</th><th className="num">Results per request</th><th className="num">Requests at once</th></tr></thead>
+            <tbody>
+              {TIERS.map((t) => (
+                <tr key={t.id} className={t.id === tier.id ? "is-current" : undefined}>
+                  <td>{t.name}{t.id === tier.id ? <span className="tag is-ochre" style={{ marginLeft: ".5rem" }}>Current</span> : null}</td>
+                  <td className="faint">{t.unlockDollars === null ? "Contact us" : t.unlockDollars === 0 ? "Free" : `${formatUsd(t.unlockDollars)} added`}</td>
+                  <td className="num">{t.maxResults}</td>
+                  <td className="num">{t.concurrency}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel">
         <h2>Recent calls</h2>
         {recent.length ? (
           <div className="table-wrap">
@@ -203,6 +259,70 @@ export default function Billing({ loaderData }: Route.ComponentProps) {
           </table>
         </section>
       ) : null}
+      </>
+      )}
     </div>
+  );
+}
+
+const day = (ms: number) => new Date(ms).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+const STATUS: Record<string, string> = { active: "Active", trialing: "Trial", past_due: "Payment due", unpaid: "Unpaid", paused: "Paused" };
+
+function SignalsTab({ signals, busy, error }: { signals: { plan: SignalsPlan | null; granted: boolean; failed: boolean }; busy: boolean; error: string | null }) {
+  const { plan, granted, failed } = signals;
+  const active = granted || plan?.status === "active";
+  const price = plan?.amountCents != null ? `${formatUsd(plan.amountCents / 100)}${plan.interval ? ` / ${plan.interval}` : ""}` : `${formatUsd(SIGNALS_MONTHLY_CENTS / 100)} / month, billed yearly`;
+  return (
+    <>
+      <div className="stats">
+        <div className="stat">
+          <span className="label">Plan</span>
+          <strong>{active ? "EDK Signals" : "Signals Free"}</strong>
+          <small>{granted ? "Access granted to this account" : plan ? STATUS[plan.status] ?? plan.status : "Annual data only"}</small>
+        </div>
+        <div className="stat">
+          <span className="label">Price</span>
+          <strong>{granted ? "Included" : plan ? price : formatUsd(SIGNALS_MONTHLY_CENTS / 100)}</strong>
+          <small>{granted ? "No charge" : plan ? "Billed by Stripe" : "per month, billed yearly"}</small>
+        </div>
+        <div className="stat">
+          <span className="label">{plan?.cancelAtPeriodEnd ? "Ends" : "Renews"}</span>
+          <strong>{plan?.periodEnd ? day(plan.periodEnd) : "—"}</strong>
+          <small>{plan?.cancelAtPeriodEnd ? "Access stops on this date" : plan ? "Renews automatically" : "No subscription"}</small>
+        </div>
+      </div>
+
+      {failed ? <div className="notice" style={{ marginBottom: "1rem" }}>We could not reach Stripe to load your Signals plan. Refresh to try again.</div> : null}
+      {error ? <div className="notice is-error" style={{ marginBottom: "1rem" }}>{error}</div> : null}
+
+      <section className="panel billing-signals">
+        <div>
+          <h2>{active ? "Manage your Signals plan" : "Subscribe to EDK Signals"}</h2>
+          <p>
+            {active
+              ? granted
+                ? "Signals is enabled for this account. Open Signals to explore data by place and over time."
+                : "Change your payment method, download invoices or cancel in the Stripe billing portal."
+              : "Monthly and weekly data, regional comparisons, the Data Viewer with date filters, and CSV or JSON exports."}
+          </p>
+          <ul className="billing-signals-list">
+            <li>Annual, monthly and weekly data</li>
+            <li>Compare up to five regions</li>
+            <li>Data Viewer: browse the records behind every chart</li>
+            <li>Export by date range as CSV or JSON</li>
+          </ul>
+        </div>
+        <div className="billing-signals-actions">
+          {granted ? null : (
+            <Form method="post">
+              <input type="hidden" name="intent" value="signals" />
+              <button className="btn btn-primary btn-lg" type="submit" disabled={busy}>{busy ? <span className="spinner" /> : plan ? "Manage subscription" : "Subscribe to Signals"}</button>
+            </Form>
+          )}
+          <Link className="btn btn-lg" to="/signals">Open Signals</Link>
+          {!active ? <Link className="faint" style={{ fontSize: ".8rem" }} to="/pricing?plan=signals">Compare plans</Link> : null}
+        </div>
+      </section>
+    </>
   );
 }

@@ -1,6 +1,6 @@
-// Stripe over its REST API (no SDK): Checkout Sessions for credit top-ups and webhook verification.
-import { cuForDollars, MAX_TOPUP_USD, MIN_TOPUP_USD, UNITS_PER_CU } from "../app/lib/pricing";
-import { creditPurchase, getSettings, recordPurchase, saveSettings } from "./store";
+// Stripe Checkout, subscriptions and webhook verification over its REST API.
+import { cuForDollars, MAX_TOPUP_USD, MIN_TOPUP_USD, SIGNALS_ANNUAL_CENTS, UNITS_PER_CU } from "../app/lib/pricing";
+import { creditPurchase, getSettings, recordPurchase } from "./store";
 
 const secretKey = () => process.env.STRIPE_SECRET_KEY || "";
 
@@ -10,15 +10,132 @@ function form(params: Record<string, string | number | undefined>) {
   return body;
 }
 
-async function stripe<T = any>(path: string, init: { method?: string; body?: URLSearchParams } = {}): Promise<T> {
+async function stripe<T = any>(path: string, init: { method?: string; body?: URLSearchParams; idempotencyKey?: string } = {}): Promise<T> {
   const res = await fetch(`https://api.stripe.com/v1/${path}`, {
     method: init.method ?? (init.body ? "POST" : "GET"),
-    headers: { authorization: `Bearer ${secretKey()}`, ...(init.body ? { "content-type": "application/x-www-form-urlencoded" } : {}) },
+    headers: { authorization: `Bearer ${secretKey()}`, ...(init.body ? { "content-type": "application/x-www-form-urlencoded" } : {}), ...(init.idempotencyKey ? { "idempotency-key": init.idempotencyKey } : {}) },
     body: init.body,
   });
   const data = (await res.json()) as any;
   if (!res.ok) throw new Error(data?.error?.message || `Stripe ${res.status}`);
   return data as T;
+}
+
+async function stripeCustomer(db: D1Database, user: { id: string; email: string }) {
+  const settings = await getSettings(db, user.id);
+  if (settings.stripe_customer_id) return settings.stripe_customer_id;
+
+  const created = await stripe<{ id: string }>("customers", {
+    body: form({ email: user.email, "metadata[edk_user_id]": user.id }),
+    idempotencyKey: `edk-customer-${user.id}`,
+  });
+  await db.prepare(
+    "insert into user_settings (user_id, stripe_customer_id, updated_at) values (?, ?, ?) on conflict(user_id) do update set stripe_customer_id = coalesce(user_settings.stripe_customer_id, excluded.stripe_customer_id)",
+  ).bind(user.id, created.id, Date.now()).run();
+  return (await getSettings(db, user.id)).stripe_customer_id!;
+}
+
+type SignalsSubscription = {
+  id: string;
+  status: string;
+  metadata?: Record<string, string>;
+  cancel_at_period_end?: boolean;
+  current_period_end?: number;
+  items?: { data?: { current_period_end?: number; price?: { unit_amount?: number | null; currency?: string; recurring?: { interval?: string } | null } }[] };
+};
+
+async function signalsSubscription(customer: string, userId: string) {
+  const params = form({ customer, status: "all", limit: 100 });
+  let inactive: SignalsSubscription | undefined;
+  for (;;) {
+    const page = await stripe<{ data: SignalsSubscription[]; has_more: boolean }>(`subscriptions?${params}`);
+    for (const sub of page.data) {
+      if (sub.metadata?.edk_plan !== "signals" || sub.metadata.edk_user_id !== userId) continue;
+      if (sub.status === "active") return sub;
+      if (["past_due", "trialing", "unpaid", "paused"].includes(sub.status)) inactive ??= sub;
+    }
+    if (!page.has_more || !page.data.length) return inactive;
+    params.set("starting_after", page.data[page.data.length - 1].id);
+  }
+}
+
+export async function hasSignalsSubscription(db: D1Database, userId: string) {
+  if (!secretKey()) return false;
+  const customer = (await getSettings(db, userId)).stripe_customer_id;
+  if (!customer) return false;
+  const subscription = await signalsSubscription(customer, userId);
+  return subscription?.status === "active";
+}
+
+export type SignalsPlan = {
+  status: string;
+  /** Price per renewal in cents, and how often it renews. */
+  amountCents: number | null;
+  currency: string | null;
+  interval: string | null;
+  /** When the current period ends (ms), and whether the plan stops then instead of renewing. */
+  periodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
+};
+
+/** The account's Signals subscription as Billing & Usage shows it, or null without one. */
+export async function getSignalsPlan(db: D1Database, userId: string): Promise<SignalsPlan | null> {
+  if (!secretKey()) return null;
+  const customer = (await getSettings(db, userId)).stripe_customer_id;
+  if (!customer) return null;
+  const sub = await signalsSubscription(customer, userId);
+  if (!sub) return null;
+  const item = sub.items?.data?.[0];
+  const end = sub.current_period_end ?? item?.current_period_end ?? null;
+  return {
+    status: sub.status,
+    amountCents: item?.price?.unit_amount ?? null,
+    currency: item?.price?.currency ?? null,
+    interval: item?.price?.recurring?.interval ?? null,
+    periodEnd: end ? end * 1000 : null,
+    cancelAtPeriodEnd: Boolean(sub.cancel_at_period_end),
+  };
+}
+
+/**
+ * Opens Signals billing: the Stripe portal for an existing subscription, otherwise Checkout.
+ * `returnPath` is where Stripe sends the user back to (pricing by default, or Billing & Usage).
+ */
+export async function openSignalsBilling(db: D1Database, user: { id: string; email: string }, siteUrl: string, returnPath = "/pricing?plan=signals") {
+  if (!secretKey()) throw new Error("Billing is not configured.");
+  const customer = await stripeCustomer(db, user);
+  if (await signalsSubscription(customer, user.id)) {
+    const portal = await stripe<{ url: string }>("billing_portal/sessions", {
+      body: form({ customer, return_url: `${siteUrl}${returnPath}` }),
+    });
+    return portal.url;
+  }
+
+  const open = await stripe<{ data: { url: string | null; metadata?: Record<string, string> }[] }>(
+    `checkout/sessions?${form({ customer, status: "open", limit: 100 })}`,
+  );
+  const existing = open.data.find((session) => session.url && session.metadata?.edk_plan === "signals");
+  if (existing?.url) return existing.url;
+
+  const session = await stripe<{ url: string }>("checkout/sessions", {
+    idempotencyKey: `edk-signals-${user.id}-${Math.floor(Date.now() / 60_000)}`,
+    body: form({
+      mode: "subscription",
+      customer,
+      client_reference_id: user.id,
+      "line_items[0][quantity]": 1,
+      "line_items[0][price_data][currency]": "usd",
+      "line_items[0][price_data][unit_amount]": SIGNALS_ANNUAL_CENTS,
+      "line_items[0][price_data][recurring][interval]": "year",
+      "line_items[0][price_data][product_data][name]": "EDK Signals",
+      "metadata[edk_plan]": "signals",
+      "subscription_data[metadata][edk_plan]": "signals",
+      "subscription_data[metadata][edk_user_id]": user.id,
+      success_url: returnPath.startsWith("/console/") ? `${siteUrl}${returnPath}` : `${siteUrl}/signals`,
+      cancel_url: `${siteUrl}${returnPath}`,
+    }),
+  });
+  return session.url;
 }
 
 /** A Checkout Session for `usd` dollars of credit. Returns its URL. */
@@ -28,13 +145,7 @@ export async function createTopUp(db: D1Database, user: { id: string; email: str
   if (!(dollars >= MIN_TOPUP_USD) || dollars > MAX_TOPUP_USD) throw new Error(`Add between $${MIN_TOPUP_USD} and $${MAX_TOPUP_USD.toLocaleString("en-US")}.`);
   const cu = cuForDollars(dollars);
   const units = cu * UNITS_PER_CU;
-  const settings = await getSettings(db, user.id);
-  let customer = settings.stripe_customer_id;
-  if (!customer) {
-    const created = await stripe("customers", { body: form({ email: user.email, "metadata[edk_user_id]": user.id }) });
-    customer = created.id as string;
-    await saveSettings(db, user.id, { stripe_customer_id: customer });
-  }
+  const customer = await stripeCustomer(db, user);
   const session = await stripe("checkout/sessions", {
     body: form({
       mode: "payment",

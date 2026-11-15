@@ -2,6 +2,7 @@ export const SCENES = [
   { id: "branch-tree", name: "branches in the breeze", subject: "branching tree", group: "land", hint: "a rooted tree, a passing breeze." },
   { id: "trees", name: "a little woodland", subject: "trees", group: "land", hint: "move through the canopy. click to stir the leaves." },
   { id: "houses", name: "places to call home", subject: "houses", group: "built", hint: "little roofs, lit windows, and chimney smoke." },
+  { id: "terrain", name: "what holds here", subject: "mountain weather", group: "land", hint: "sun on one slope, rain on the other." },
   { id: "cars", name: "on the move", subject: "cars", group: "built", hint: "click to set a destination. they find a way around." },
   { id: "koi", name: "a quiet pond", subject: "koi", group: "water", hint: "click to feed. move slowly to draw them near." },
   { id: "shoal", name: "silver, together", subject: "silver shoal", group: "water", hint: "click to gather the school. a quick sweep scatters it." },

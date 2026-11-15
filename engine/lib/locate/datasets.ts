@@ -50,11 +50,12 @@ async function legendById(id: string) {
   return rows[0] ?? null;
 }
 
-async function legendByTable(table: string) {
+async function legendByTable(table: string, place?: string) {
   const rows = (await sql.query(
-    `select ${LEGEND_COLS} from legends where source_table = $1 or target_table = $1
-     order by (source_table = $1) desc, (status = 'active') desc, updated_at desc nulls last limit 1`,
-    [table],
+    `select ${LEGEND_COLS} from legends where (source_table = $1 or target_table = $1)
+       and ($2::text is null or nullif(btrim(city), '') is null or lower(city) = lower($2))
+     order by (lower(city) = lower($2)) desc nulls last, (source_table = $1) desc, (status = 'active') desc, updated_at desc nulls last limit 1`,
+    [table, place ?? null],
   )) as any[];
   return rows[0] ?? null;
 }
@@ -80,19 +81,39 @@ export async function datasetsFor(artifactIds: string[]): Promise<Dataset[]> {
   for (const hit of found) {
     if (!hit) continue;
     const l = hit.legend;
-    const entry = byId.get(l.id) ?? {
-      id: String(l.id),
-      name: String(l.name || "Dataset"),
-      publisher: l.publisher || null,
-      description: l.description ? String(l.description).split(/\n\s*\n/)[0].trim() : null,
-      url: l.url && /^https?:\/\//.test(l.url) ? l.url : null,
-      license: l.license || null,
-      place: l.place || null,
-      category: l.category || null,
-      artifacts: [] as string[],
-    };
+    const entry = byId.get(l.id) ?? toDataset(l);
     if (!entry.artifacts.includes(hit.artifact)) entry.artifacts.push(hit.artifact);
     byId.set(l.id, entry);
   }
   return Array.from(byId.values());
+}
+
+function toDataset(l: Record<string, any>): Dataset {
+  return {
+    id: String(l.id),
+    name: String(l.name || "Dataset"),
+    publisher: l.publisher || null,
+    description: l.description ? String(l.description).split(/\n\s*\n/)[0].trim() : null,
+    url: l.url && /^https?:\/\//.test(l.url) ? l.url : null,
+    license: l.license || null,
+    place: l.place || null,
+    category: l.category || null,
+    artifacts: [],
+  };
+}
+
+export async function datasetsForSource(table: string, ids: string[], place: string): Promise<Dataset[]> {
+  const validIds = [...new Set(ids)].filter((id) => /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id));
+  const found: Record<string, any>[] = validIds.length ? await sql.query(
+    `select distinct on (id) id, name, publisher, description, url, license, place, category
+     from (
+       select ${LEGEND_COLS}, 0 as priority from legends where dataset_id = any($1::uuid[])
+       union all select ${LEGEND_COLS}, 1 as priority from public_legends where dataset_id = any($1::uuid[])
+     ) matches order by id, priority`, [validIds],
+  ) : [];
+  if (!found.length) {
+    const fallback = await legendByTable(table, place);
+    if (fallback) found.push(fallback);
+  }
+  return found.map(toDataset);
 }

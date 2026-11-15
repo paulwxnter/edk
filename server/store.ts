@@ -1,5 +1,6 @@
 // D1 data access: API keys, balances, usage, settings, stored results and credit purchases.
 import { FREE_UNITS, UNITS_PER_CU } from "../app/lib/pricing";
+import { tierFor } from "../app/lib/tiers";
 
 const now = () => Date.now();
 const randomId = (prefix = "") => prefix + crypto.randomUUID().replace(/-/g, "");
@@ -18,7 +19,7 @@ export async function sha256Hex(text: string) {
 // ---- API keys ---------------------------------------------------------------
 
 export type KeyKind = "secret" | "publishable";
-export type ApiKeyRow = { id: string; user_id: string; name: string; kind: KeyKind; prefix: string; allowed_origins: string | null; created_at: number; last_used_at: number | null; revoked_at: number | null };
+export type ApiKeyRow = { id: string; user_id: string; name: string; kind: KeyKind; prefix: string; allowed_origins: string | null; daily_load_cap: number | null; created_at: number; last_used_at: number | null; revoked_at: number | null };
 
 export async function createApiKey(db: D1Database, userId: string, name: string, kind: KeyKind, allowedOrigins: string[] = []) {
   const key = `${kind === "secret" ? "edk_sk_" : "edk_pk_"}${randomToken(32)}`;
@@ -32,7 +33,7 @@ export async function createApiKey(db: D1Database, userId: string, name: string,
 }
 
 export async function listApiKeys(db: D1Database, userId: string) {
-  const { results } = await db.prepare("select id, user_id, name, kind, prefix, allowed_origins, created_at, last_used_at, revoked_at from api_keys where user_id = ? and revoked_at is null order by created_at desc").bind(userId).all<ApiKeyRow>();
+  const { results } = await db.prepare("select id, user_id, name, kind, prefix, allowed_origins, daily_load_cap, created_at, last_used_at, revoked_at from api_keys where user_id = ? and revoked_at is null order by created_at desc").bind(userId).all<ApiKeyRow>();
   return results;
 }
 
@@ -42,39 +43,82 @@ export async function revokeApiKey(db: D1Database, userId: string, id: string) {
 
 export async function findApiKey(db: D1Database, key: string) {
   if (!/^edk_(sk|pk)_[A-Za-z0-9]{20,64}$/.test(key)) return null;
-  const row = await db.prepare("select id, user_id, name, kind, prefix, allowed_origins, created_at, last_used_at, revoked_at from api_keys where hash = ?").bind(await sha256Hex(key)).first<ApiKeyRow>();
+  const row = await db.prepare("select id, user_id, name, kind, prefix, allowed_origins, daily_load_cap, created_at, last_used_at, revoked_at from api_keys where hash = ?").bind(await sha256Hex(key)).first<ApiKeyRow>();
   if (!row || row.revoked_at) return null;
   // Touch at most once a minute.
   if (!row.last_used_at || now() - row.last_used_at > 60_000) await db.prepare("update api_keys set last_used_at = ? where id = ?").bind(now(), row.id).run();
   return row;
 }
 
-export function originAllowed(row: ApiKeyRow, origin: string | null) {
-  if (!row.allowed_origins) return true;
-  if (!origin) return false;
-  const host = (() => {
-    try {
-      return new URL(origin).origin;
-    } catch {
-      return origin;
-    }
-  })();
+export function originAllowed(row: Pick<ApiKeyRow, "allowed_origins">, origin: string | null) {
+  // A key with no allowed sites embeds nowhere.
+  if (!row.allowed_origins || !origin) return false;
+  let page: URL;
+  try {
+    page = new URL(origin);
+  } catch {
+    return false;
+  }
   return row.allowed_origins.split(",").some((allowed) => {
-    if (allowed === host) return true;
-    // "*.example.com" allows any subdomain.
-    const m = allowed.match(/^(https?:\/\/)?\*\.(.+)$/);
-    return m ? new URL(host).hostname.endsWith(`.${m[2]}`) : false;
+    if (allowed === page.origin) return true;
+    // "https://*.example.com" allows any subdomain.
+    const wild = allowed.match(/^(https?):\/\/\*\.(.+)$/);
+    if (wild) return page.protocol === `${wild[1]}:` && page.hostname.endsWith(`.${wild[2]}`);
+    // "http://localhost" with no port allows any port on this computer.
+    const local = allowed.match(/^(https?):\/\/(localhost|127\.0\.0\.1)$/);
+    return local ? page.protocol === `${local[1]}:` && page.hostname === local[2] : false;
   });
+}
+
+/** An embed key's allowed sites, daily load limit or name. */
+export async function updateEmbedKey(db: D1Database, userId: string, id: string, patch: { origins?: string[]; daily_load_cap?: number | null; name?: string }) {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (patch.origins) {
+    sets.push("allowed_origins = ?");
+    params.push(Array.from(new Set(patch.origins)).join(",") || null);
+  }
+  if (patch.daily_load_cap !== undefined) {
+    sets.push("daily_load_cap = ?");
+    params.push(patch.daily_load_cap);
+  }
+  if (patch.name !== undefined) {
+    sets.push("name = ?");
+    params.push(patch.name.slice(0, 60) || "Embed");
+  }
+  if (!sets.length) return;
+  await db.prepare(`update api_keys set ${sets.join(", ")} where id = ? and user_id = ? and kind = 'publishable' and revoked_at is null`).bind(...params, id, userId).run();
 }
 
 // ---- Balance ----------------------------------------------------------------
 
-/** The user's balance in units; a new account starts with the free grant. */
+/**
+ * Every account gets FREE_UNITS each calendar month (UTC). What is left of them does not carry over;
+ * credits that were bought never expire. Free units are spent first.
+ */
+export async function getBalanceParts(db: D1Database, userId: string) {
+  const month = monthStart();
+  const row = await db.prepare("select units, free_units, free_month from balances where user_id = ?").bind(userId).first<{ units: number; free_units: number; free_month: number }>();
+  if (!row) {
+    await db.prepare("insert or ignore into balances (user_id, units, free_units, free_month, updated_at) values (?, 0, ?, ?, ?)").bind(userId, FREE_UNITS, month, now()).run();
+    return { paid: 0, free: FREE_UNITS };
+  }
+  if (row.free_month !== month) {
+    await db.prepare("update balances set free_units = ?, free_month = ?, updated_at = ? where user_id = ? and free_month != ?").bind(FREE_UNITS, month, now(), userId, month).run();
+    return { paid: row.units, free: FREE_UNITS };
+  }
+  // The monthly allowance shrank: trim what is left this month so nobody keeps more than today's grant.
+  if (row.free_units > FREE_UNITS) {
+    await db.prepare("update balances set free_units = min(free_units, ?), updated_at = ? where user_id = ?").bind(FREE_UNITS, now(), userId).run();
+    return { paid: row.units, free: FREE_UNITS };
+  }
+  return { paid: row.units, free: row.free_units };
+}
+
+/** The user's balance in units: this month's free units plus credits. */
 export async function getBalance(db: D1Database, userId: string) {
-  const row = await db.prepare("select units from balances where user_id = ?").bind(userId).first<{ units: number }>();
-  if (row) return row.units;
-  await db.prepare("insert or ignore into balances (user_id, units, updated_at) values (?, ?, ?)").bind(userId, FREE_UNITS, now()).run();
-  return FREE_UNITS;
+  const b = await getBalanceParts(db, userId);
+  return b.paid + b.free;
 }
 
 export async function addUnits(db: D1Database, userId: string, units: number) {
@@ -117,22 +161,52 @@ export async function unitsThisMonth(db: D1Database, userId: string) {
  * under their monthly cap. 0 means the call must be refused.
  */
 export async function spendable(db: D1Database, userId: string) {
-  const [balance, settings, used] = await Promise.all([getBalance(db, userId), getSettings(db, userId), unitsThisMonth(db, userId)]);
+  const [parts, settings, used, added] = await Promise.all([getBalanceParts(db, userId), getSettings(db, userId), unitsThisMonth(db, userId), dollarsAdded(db, userId)]);
+  const balance = parts.paid + parts.free;
   const capLeft = settings.monthly_cu_cap != null ? settings.monthly_cu_cap * UNITS_PER_CU - used : Infinity;
-  return { balance, settings, used, spendable: Math.max(0, Math.min(balance, capLeft)), capped: capLeft <= 0 };
+  const tier = tierFor(added);
+  return { balance, free: parts.free, settings, used, added, tier, spendable: Math.max(0, Math.min(balance, capLeft)), capped: capLeft <= 0 };
+}
+
+/** Lifetime credits added, in dollars (paid Checkout Sessions). */
+export async function dollarsAdded(db: D1Database, userId: string) {
+  const row = await db.prepare("select coalesce(sum(amount_cents), 0) as cents from credit_purchases where user_id = ? and credited_at is not null").bind(userId).first<{ cents: number }>();
+  return (row?.cents ?? 0) / 100;
+}
+
+// ---- Concurrency ----------------------------------------------------------------
+
+const STALE_MS = 120_000;
+
+/** Claims a slot for a running request, or returns null when the tier's limit is reached. */
+export async function beginInflight(db: D1Database, userId: string, limit: number) {
+  const since = Date.now() - STALE_MS;
+  const row = await db.prepare("select count(*) as n from inflight where user_id = ? and started_at > ?").bind(userId, since).first<{ n: number }>();
+  if ((row?.n ?? 0) >= limit) return null;
+  const id = randomId("run_");
+  await db.batch([
+    db.prepare("delete from inflight where user_id = ? and started_at <= ?").bind(userId, since),
+    db.prepare("insert into inflight (id, user_id, started_at) values (?, ?, ?)").bind(id, userId, Date.now()),
+  ]);
+  return id;
+}
+
+export async function endInflight(db: D1Database, id: string) {
+  await db.prepare("delete from inflight where id = ?").bind(id).run();
 }
 
 export async function recordUsage(
   db: D1Database,
-  e: { userId: string; keyId: string | null; source: string; endpoint: string; locations: number; areas: number; query?: string | null; resultId?: string | null },
+  e: { userId: string; keyId: string | null; source: string; endpoint: string; locations: number; areas: number; chargedUnits?: number; query?: string | null; resultId?: string | null },
 ) {
   // Columns: results = locations returned, images = areas returned (5 of either = 1 CU).
-  const units = e.locations + e.areas;
+  const units = e.chargedUnits ?? e.locations + e.areas;
   await db.batch([
     db
       .prepare("insert into usage_events (id, user_id, key_id, source, endpoint, results, images, units, query, result_id, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .bind(randomId("use_"), e.userId, e.keyId, e.source, e.endpoint, e.locations, e.areas, units, e.query?.slice(0, 500) ?? null, e.resultId ?? null, now()),
-    db.prepare("update balances set units = units - ?, updated_at = ? where user_id = ?").bind(units, now(), e.userId),
+    // Free units first, then credits. (Both expressions read the row as it was before the update.)
+    db.prepare("update balances set free_units = max(free_units - ?, 0), units = units - max(? - free_units, 0), updated_at = ? where user_id = ?").bind(units, units, now(), e.userId),
   ]);
   return units;
 }
@@ -173,7 +247,18 @@ export async function getResult(db: D1Database, id: string) {
   return row ? { ...row, payload: JSON.parse(row.payload) } : null;
 }
 
-export const newResultId = () => randomId("res_").slice(0, 28);
+/** The account's latest Discover results, newest first, for the Playground's recent list. */
+export async function listResults(db: D1Database, userId: string, limit = 6) {
+  const { results } = await db.prepare("select id, query, created_at from results where user_id = ? order by created_at desc limit ?").bind(userId, limit).all<{ id: string; query: string; created_at: number }>();
+  return results;
+}
+
+/** What a stored result cost when it was made. */
+export async function usageForResult(db: D1Database, userId: string, resultId: string) {
+  return db.prepare("select results as locations, images as areas, units from usage_events where user_id = ? and result_id = ? limit 1").bind(userId, resultId).first<{ locations: number; areas: number; units: number }>();
+}
+
+export const newResultId =() => randomId("res_").slice(0, 28);
 
 // ---- Anonymous map searches ---------------------------------------------------
 

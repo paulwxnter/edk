@@ -12,6 +12,7 @@ import { legend, readAttribute } from "./legend";
 import { addAnswerTokens, estimateTokens } from "./tokens";
 
 export type AnswerInput = {
+  measuredFacts?: string[];
   query: string;
   features: Array<{ properties?: Record<string, any> }>;
   regions?: Array<{ id: string; name: string; layer?: string; state_name?: string; country_name?: string }>;
@@ -189,6 +190,7 @@ async function ledgerSection(input: AnswerInput) {
 
 /** The structured context Luna answers from. Plain labelled lines read better for the model than JSON. */
 export async function buildContext(input: AnswerInput): Promise<string> {
+  if (input.measuredFacts?.length) return ["MEASUREMENTS FROM MAPPED DATA", ...input.measuredFacts.slice(0, 20)].join("\n");
   const props = input.features.map((f) => f.properties || {});
   const region = input.regions?.[0];
   const matchedKeys = (input.filters?.applied || []).map((f) => f.key);
@@ -323,7 +325,9 @@ export const ANSWER_REASONING_EFFORT = process.env.ANSWER_REASONING_EFFORT || "l
 export async function generateAnswer(input: AnswerInput, timeoutMs = 8000): Promise<string | null> {
   if (!input.features.length) return null;
   const messages = [
-    { role: "system", content: ANSWER_SYSTEM_PROMPT },
+    { role: "system", content: input.measuredFacts?.length
+      ? "Answer the geographic question in plain language using only the provided measurements. Use their units and identify the subjects. Keep the method, routing, and internal identifiers private. Preserve missing values and describe counts as mapped records."
+      : ANSWER_SYSTEM_PROMPT },
     { role: "user", content: await buildContext(input) },
   ];
   const primary = openAi();

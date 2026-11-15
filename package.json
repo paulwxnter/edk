@@ -14,6 +14,8 @@
 		"publish": true
 	},
 	"dependencies": {
+		"@cf-wasm/photon": "^0.4.0",
+		"@intercom/messenger-js-sdk": "^0.0.20",
 		"better-auth": "^1.7.22",
 		"h3-js": "^4.5.0",
 		"hono": "^4.13.18",
@@ -21,6 +23,7 @@
 		"maplibre-gl": "^4.7.1",
 		"pmtiles": "^4.5.0",
 		"postgres": "^3.4.9",
+		"posthog-js": "^1.449.2",
 		"protomaps-themes-base": "^4.5.0",
 		"react": "19.2.1",
 		"react-dom": "19.2.1",

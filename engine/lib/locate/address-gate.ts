@@ -88,8 +88,8 @@ export async function geocodeAddress(address: string, near?: [number, number] | 
  * The whole gate: JEV → Luna → Mapbox. Returns the geocoded addresses (empty when the query has
  * none, or when any step cannot answer: the search then runs as it would have).
  */
-export async function gateAddresses(query: string, near?: [number, number] | null): Promise<{ asked: boolean; probability: number | null; addresses: GeocodedAddress[] }> {
-  if (!MAYBE_ADDRESS.test(query)) return { asked: false, probability: null, addresses: [] };
+export async function gateAddresses(query: string, near?: [number, number] | null, semantic = false): Promise<{ asked: boolean; probability: number | null; addresses: GeocodedAddress[] }> {
+  if (!semantic && !MAYBE_ADDRESS.test(query)) return { asked: false, probability: null, addresses: [] };
   const probability = await needsGeocoding(query);
   if (probability === null || probability < 0.5) return { asked: true, probability, addresses: [] };
   const found = await extractAddresses(query).catch((e) => {

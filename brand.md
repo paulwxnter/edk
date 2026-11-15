@@ -1,39 +1,62 @@
 # EDK brand guide
 
-EDK is the compass for machines: one API for questions about the physical world. The identity is **the compass**: a heavy Earth ring crossed by a needle whose ochre north point breaks out of the ring.
+EDK makes EDK-1, a spatial model that gives humans and machines a compass for the world: position, condition, motion, navigation, stream and vision. The logo is the wordmark **edk**.
 
-## Mark and wordmark
+## Primitives
 
-- Drawn on a 64-unit grid. Ring: circle r 22.5, stroke 7. Needle: north `M32 1.5 41.5 32H22.5Z` (Ochre), south `M32 62.5 22.5 32H41.5Z`. East–west bar: `M11 32 32 27.2V36.8Z M53 32 32 36.8V27.2Z`. Pivot: r 3.6 hole with a 2.4 stroke.
-- The wordmark "edk" is custom drawn with 9-unit strokes on a 136 × 64 box. Use the artwork; never set "edk" in a typeface.
-- Lockup: mark, 22-unit gap, wordmark (viewBox 222 × 64).
-- The north point is always Ochre. Everything else is one ink: Soil on light, Paper on dark. On an Ochre background, use the one-color mark in Soil.
-- Clear space: a quarter of the mark's width. Minimum size: 16px for the mark, 96px wide for the lockup.
-- Don't rotate, stretch, outline, recolor the north point, or add shadows or glows.
+Everything EDK-1 does is one of six primitives. Describe the model in these terms, in this order; each builds on the ones before it.
+
+| Primitive | What it is | Line |
+|---|---|---|
+| Position | Grounding anything on Earth | A name, a sentence, a photograph or a coordinate resolves to one exact place, with everything known about it attached. Position is how a model stops guessing where and starts knowing. |
+| Condition | Reading the state of a place | Terrain, risk, access and activity, fused into a single picture of what holds at a place. Condition turns ground truth into something a machine can decide from. |
+| Motion | Understanding how the world moves | Flows, rhythms and change over time: what a place is doing now, and where it is heading. Motion gives a model a sense of before and after. |
+| Navigation | Directing movement through the physical world | Paths for people and machines, shaped by position, condition and motion together. Navigation is where understanding becomes action: the right way through, not only the shortest. |
+| Stream | Watching for change, everywhere | A standing watch over a place: the moment something new appears, it is noticed, described and sent on. Stream turns a model that answers into one that keeps an eye out. |
+| Vision | Seeing what is in front of you | A single image, read the way the model reads the world: every object it knows is found, named and outlined. Vision lets a machine look at the ground in front of it and know what is there. |
+
+- Tagline: **Compass for Machines**. The six primitives are what the compass reads.
+- Capitalize a primitive when naming it (Position), lowercase in running text ("position, condition, motion, navigation, stream and vision").
+- Discover, Inspect, Route, Monitor and Detect are the API calls; the primitives are what the model does. Don't present the calls as primitives.
+- Each primitive has its own ASCII scene: houses (Position), a mountain under changing weather (Condition), birds (Motion), cars (Navigation), a river (Stream), an aurora (Vision). They are shown at https://edk.earth/model.
+- The copy lives in `app/lib/primitives.ts`. Change it there and here together.
+
+## Wordmark
+
+- Drawn on a 136 x 64 box with 9-unit strokes: `e` (bar and open bowl), `d` (bowl and stem), `k` (stem, arm, leg). Use the artwork in `public/brand/`; never set "edk" in a typeface.
+- One ink: Soil on light, Paper on dark, Soil on Ochre.
+- Clear space: the height of the "e" on every side. Smallest size: 14px tall.
+- Don't stretch, outline, rotate or add effects.
 
 ## Color
 
 | Name | HEX | Role |
 |---|---|---|
-| Soil | `#13110E` | Dark canvas (default theme), ink on light |
-| Paper | `#F1EBDF` | Light canvas, mark on dark |
-| Ochre | `#E0A458` | North needle, primary action, active state |
+| Soil | `#13110E` | Canvas (dark is the default), ink on light |
+| Paper | `#F1EBDF` | Light canvas, ink on dark |
+| Ochre | `#E0A458` | Primary actions, one accent per screen |
 | Moss | `#9CB46A` | Live, verified, free |
-| Clay | `#C8643F` | Highlights and warnings, sparingly |
+| Clay | `#C8643F` | Warnings, sparingly |
 | Sky | `#8FB3C0` | Water, numbers in code |
-
-Light theme surfaces: background `#F4EFE6`, raised `#FBF8F2`, rule `#DED5C5`. Dark theme surfaces: background `#13110E`, raised `#1B1814`, rule `#2E2922`.
 
 ## Type
 
-Fraunces for display headings (500, soft optical size), Geist for UI and body, Geist Mono for code, labels, navigation and numbers.
+Geist for headings and text (600 for headings, tight negative tracking), Geist Mono for code, labels, navigation and numbers.
 
-## Motion and texture
+## Shape
 
-- ASCII scenes from the eearth engine (a spinning Earth in the hero; birds, houses, butterflies, a tree and aurora elsewhere) are etched in a page-aligned glyph grid and kept away from text.
-- Faint topographic contour lines sit behind heroes.
-- Interface transitions are 130ms on color and border only. Everything respects `prefers-reduced-motion`.
+- Corners are nearly square: 2px on controls, chips and markers, 4px on inputs and cards, 6px on panels and the Atlas dock. Nothing is a pill.
+- Only true circles stay round: status dots, avatars, the globe.
+- Elevation comes from 1px borders; resting elements carry no shadow.
+
+## Texture and motion
+
+- ASCII scenes from the eearth engine: an Earth in the hero, quieter scenes beside section headings. Never behind text.
+- A graticule behind the hero, centred on the Earth: hairline range rings, bearings every 15° and one Ochre ring, concentric with the globe. No dot grids, gradients-as-decoration or glows.
+- No rule between the header and the page.
+- No all-caps kickers or labels. Headings stand on their own; small labels are sentence case.
+- Transitions are 130ms on color and border. Everything respects `prefers-reduced-motion`.
 
 ## Assets
 
-`public/brand/`: mark, mark on dark, one-color mark, wordmark (both inks), lockups (both inks), app icon (SVG, 512 and 192 PNG) and the 1200 × 630 social card. `public/favicon.svg`, `favicon.ico`, `apple-touch-icon.png` and `og.png` are derived from them. The site shows them at https://edk.earth/brand.
+`public/brand/`: wordmark (soil, paper, ochre; SVG and PNG), app icon (SVG, 512 and 192 PNG), social card (SVG and PNG). `public/favicon.svg`, `favicon.ico`, `apple-touch-icon.png` and `og.png` are derived from them. Shown at https://edk.earth/brand.

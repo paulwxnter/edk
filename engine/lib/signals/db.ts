@@ -2,7 +2,7 @@
 // Every lookup goes through ledger by numeric feature_id (indexed), never through a text join.
 import { unstable_cache } from "lib/cache";
 import { sql } from "lib/locate/e2-db";
-import { isIndicatorType, sourceLabel, type Bench, type Model, type PeerRow, type Point, type Region, type RegionValue, type SearchHit, type Timeframe } from "./types";
+import { isIndicatorType, isWebTechMethod, measurementFor, type Bench, type Model, type PeerRow, type Point, type Region, type RegionValue, type SearchHit, type Timeframe } from "./types";
 
 const HOUR = 3600;
 const cached = <A extends unknown[], R>(fn: (...args: A) => Promise<R>, key: string, revalidate = HOUR) =>
@@ -26,6 +26,7 @@ function toModel(r: Record<string, any>): Model {
     method: r.method ?? null,
     indicatorType: isIndicatorType(r.indicator_type) ? r.indicator_type : null,
     interests: Array.isArray(r.interests) ? r.interests : [],
+    ...measurementFor(r.method),
   };
 }
 
@@ -67,7 +68,7 @@ export const search = cached(async (q: string): Promise<SearchHit[]> => {
   if (term.length < 2) return [];
   const [features, regions] = await Promise.all([
     query(
-      `select slug, name, method, indicator_type from artifacts
+      `select slug, name, indicator_type from artifacts
        where lower(name) like '%' || $1 || '%' and feature_id ~ '^[0-9]+$' and slug is not null
        order by ${METHOD_TIER}, (lower(name) = $1) desc, (lower(name) like $1 || '%') desc, (lower(name) ~ ('\\m' || $2)) desc, length(name), name
        limit 8`,
@@ -81,7 +82,7 @@ export const search = cached(async (q: string): Promise<SearchHit[]> => {
     ),
   ]);
   return [
-    ...features.map((f): SearchHit => ({ kind: "feature", slug: f.slug, name: String(f.name).replace(/ Web Usage$/i, ""), type: isIndicatorType(f.indicator_type) ? f.indicator_type : null, source: sourceLabel(f.method) })),
+    ...features.map((f): SearchHit => ({ kind: "feature", slug: f.slug, name: String(f.name).replace(/ Web Usage$/i, ""), type: isIndicatorType(f.indicator_type) ? f.indicator_type : null })),
     ...regions.map((r): SearchHit => {
       const region = toRegion(r);
       return { kind: "region", slug: region.slug, name: region.name, label: [region.type, region.stateCode ?? region.countryCode].filter(Boolean).join(" · ") };
@@ -94,7 +95,7 @@ export const search = cached(async (q: string): Promise<SearchHit[]> => {
 export type Availability = { timeframes: Exclude<Timeframe, "all">[]; total: number | null; bench: Bench | null };
 
 /** What the ledger holds for a feature in a region: which series exist, the all-time total and the peer benchmark. */
-export const getAvailability = cached(async (featureId: number, regionId: number): Promise<Availability> => {
+export const getAvailability = cached(async (featureId: number, regionId: number, measurement = "count"): Promise<Availability> => {
   const rows = await query(
     `select timeframe, count(*)::int n,
             max(total_count) filter (where timeframe = 'all') total,
@@ -103,8 +104,8 @@ export const getAvailability = cached(async (featureId: number, regionId: number
             max(quantity_percentile) filter (where timeframe = 'all') quantity_percentile,
             max(quantity_share) filter (where timeframe = 'all') quantity_share,
             max(quantity_country_rank) filter (where timeframe = 'all') quantity_country_rank
-     from ledger where feature_id = $1 and region_id = $2 and measurement = 'count' group by timeframe`,
-    [featureId, regionId]
+     from ledger where feature_id = $1 and region_id = $2 and measurement = $3 group by timeframe`,
+    [featureId, regionId, measurement]
   );
   const all = rows.find((r) => r.timeframe === "all");
   // A series needs at least two periods to be worth plotting.
@@ -122,78 +123,93 @@ const SERIES_SPAN: Record<Exclude<Timeframe, "all">, { periods: number; step: st
   weekly: { periods: 78, step: "1 week" },
 };
 
-export const getSeries = cached(async (featureId: number, regionId: number, tf: Exclude<Timeframe, "all">): Promise<Point[]> => {
+export const getSeries = cached(async (featureId: number, regionId: number, tf: Exclude<Timeframe, "all">, measurement = "count"): Promise<Point[]> => {
   const { periods, step } = SERIES_SPAN[tf];
   const rows = await query(
-    `with latest as (select max(date_from) d from ledger where region_id = $1 and feature_id = $2 and timeframe = $3 and measurement = 'count')
+    `with latest as (select max(date_from) d from ledger where region_id = $1 and feature_id = $2 and timeframe = $3 and measurement = $6)
      select to_char(date_from, 'YYYY-MM-DD') d, total_count v
      from ledger, latest
-     where region_id = $1 and feature_id = $2 and timeframe = $3 and measurement = 'count'
+     where region_id = $1 and feature_id = $2 and timeframe = $3 and measurement = $6
        and date_from > latest.d - ($4::int * $5::interval)
      order by date_from`,
-    [regionId, featureId, tf, periods, step]
+    [regionId, featureId, tf, periods, step, measurement]
   );
   return rows.map((r) => ({ date: r.d, value: Number(r.v) || 0 }));
 }, "series");
 
 /** Top regions of one type for a feature (all-time counts). */
-export const getTopRegions = cached(async (featureId: number, regionType: string, limit = 15): Promise<RegionValue[]> => {
+export const getTopRegions = cached(async (featureId: number, regionType: string, limit = 15, measurement = "count"): Promise<RegionValue[]> => {
   const rows = await query(
     `select r.id, r.slug, r.name, r.region_type, r.state_code, r.country_code, r.population, r.area_sq_km, l.total_count v
      from ledger l join regions r on r.id = l.region_id
-     where l.feature_id = $1 and l.timeframe = 'all' and l.region_type = $2 and l.measurement = 'count' and l.total_count > 0 and r.slug is not null
+     where l.feature_id = $1 and l.timeframe = 'all' and l.region_type = $2 and l.measurement = $4 and l.total_count > 0 and r.slug is not null
      order by l.total_count desc limit $3`,
-    [featureId, regionType, limit]
+    [featureId, regionType, limit, measurement]
   );
   return rows.map((r) => ({ region: toRegion(r), value: Number(r.v) || 0 }));
 }, "top-regions");
 
 /** Region types a feature has data at, so the comparison only offers tabs that will fill. */
-export const getRegionTypes = cached(async (featureId: number): Promise<string[]> => {
+export const getRegionTypes = cached(async (featureId: number, measurement = "count"): Promise<string[]> => {
   const rows = await query(
     `select t from unnest(array['city','county','state','country']) t
-     where exists (select 1 from ledger where feature_id = $1 and region_type = t and timeframe = 'all' and measurement = 'count' and total_count > 0)`,
-    [featureId]
+     where exists (select 1 from ledger where feature_id = $1 and region_type = t and timeframe = 'all' and measurement = $2 and total_count > 0)`,
+    [featureId, measurement]
   );
   return rows.map((r) => r.t as string);
 }, "region-types");
 
 /** Regions with data for this feature whose name matches (used to add regions to a comparison). */
-export const searchRegionsForFeature = cached(async (featureId: number, q: string): Promise<RegionValue[]> => {
+export const searchRegionsForFeature = cached(async (featureId: number, q: string, measurement = "count"): Promise<RegionValue[]> => {
   const term = q.trim();
   if (!term) return [];
   const rows = await query(
     `select r.id, r.slug, r.name, r.region_type, r.state_code, r.country_code, r.population, r.area_sq_km, l.total_count v
-     from regions r join ledger l on l.region_id = r.id and l.feature_id = $1 and l.timeframe = 'all' and l.measurement = 'count' and l.total_count > 0
+     from regions r join ledger l on l.region_id = r.id and l.feature_id = $1 and l.timeframe = 'all' and l.measurement = $3 and l.total_count > 0
      where r.name ilike $2 || '%' and r.slug is not null
      order by (lower(r.name) = lower($2)) desc, l.total_count desc
      limit 8`,
-    [featureId, term]
+    [featureId, term, measurement]
   );
   return rows.map((r) => ({ region: toRegion(r), value: Number(r.v) || 0 }));
 }, "regions-for-feature");
 
-/** The other indicators of the same type in this region, largest first. */
-export const getPeers = cached(async (regionId: number, type: string): Promise<PeerRow[]> => {
+/**
+ * The other indicators like this one in this region, largest first: the same indicator type for counted
+ * signals, the same kind of web technology (technology or category) for web technologies.
+ */
+export const getPeers = cached(async (regionId: number, type: string, measurement = "count", method: string | null = null): Promise<PeerRow[]> => {
+  const byMethod = measurement !== "count" && isWebTechMethod(method);
   const rows = await query(
     `select a.slug, a.name, l.total_count v from (
        select feature_id, total_count from ledger
-       where region_id = $1 and timeframe = 'all' and year = 0 and measurement = 'count' and total_count > 0
+       where region_id = $1 and timeframe = 'all' and year = 0 and measurement = $3 and total_count > 0
        order by total_count desc limit 4000
      ) l join artifacts a on a.feature_id = l.feature_id::text
-     where a.indicator_type = $2 and a.slug is not null
+     where ${byMethod ? "a.method = $2" : "a.indicator_type = $2"} and a.slug is not null
      order by l.total_count desc limit 40`,
-    [regionId, type]
+    [regionId, byMethod ? method : type, measurement]
   );
   const seen = new Set<string>();
   return rows.filter((r) => !seen.has(r.slug) && !!seen.add(r.slug)).map((r) => ({ slug: r.slug, name: String(r.name).replace(/ Web Usage$/i, ""), value: Number(r.v) || 0 }));
 }, "peers", 6 * HOUR);
 
 /** Best region to land on when a feature has nothing in the requested one. */
-export async function getFallbackRegion(featureId: number): Promise<Region | null> {
-  for (const t of ["city", "county", "state", "country"]) {
-    const top = await getTopRegions(featureId, t, 1);
+export async function getFallbackRegion(featureId: number, measurement = "count", types = ["city", "county", "state", "country"]): Promise<Region | null> {
+  for (const t of types) {
+    const top = await getTopRegions(featureId, t, 1, measurement);
     if (top[0]) return top[0].region;
   }
   return null;
 }
+
+/** The country a region sits in (itself for a country). Web technologies are only reported per country. */
+export const getCountryFor = cached(async (region: Region): Promise<Region | null> => {
+  if (region.type === "country") return region;
+  if (!region.countryCode) return null;
+  const rows = await query(
+    `select ${REGION_COLS} from regions where region_type = 'country' and country_code = $1 and slug is not null order by id limit 1`,
+    [region.countryCode]
+  );
+  return rows[0] ? toRegion(rows[0]) : null;
+}, "country-for");

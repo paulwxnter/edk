@@ -1,7 +1,7 @@
 import { type Box, clamp } from "./koi/world";
 import type { MotionSceneId } from "./scenes";
 import { type Agent, type Joint, type Point, type Pulse, TAU, angleDelta, freePosition, makeChain, rand, repel, stepChain } from "./motion";
-import { drawBranchTree, drawCar, drawHouse, drawTree } from "./WorldArtifacts";
+import { drawBranchTree, drawCar, drawHouse, drawTerrain, drawTree } from "./WorldArtifacts";
 import { type ArtworkPlacement, layoutArtwork } from "./compositions";
 import { EARTH_COLORS, landAt } from "./earthSurface";
 
@@ -39,7 +39,7 @@ export class SceneLife {
     this.width = width; this.height = height; this.boxes = boxes;
     const small = width < 650;
     const base = clamp(Math.min(width, height) * .17, 62, 112);
-    const populations: Record<MotionSceneId, number> = { "branch-tree":2, trees: small?2:3, houses: small?2:3, cars: small?3:4, shoal: small ? 6 : 9, rays: small ? 2 : 3, jellyfish: small?3:4, octopus: 2, birds: small ? 4 : 7, butterflies: small?3:5, dragonflies: small?3:4, hummingbirds: small?2:3, kelp: small?2:3, grass: small?2:3, willow: 2, waves: small?2:3, river: 2, aurora: 2, earth: 2 };
+    const populations: Record<MotionSceneId, number> = { "branch-tree":2, trees: small?2:3, houses: small?2:3, terrain: small?1:2, cars: small?3:4, shoal: small ? 6 : 9, rays: small ? 2 : 3, jellyfish: small?3:4, octopus: 2, birds: small ? 4 : 7, butterflies: small?3:5, dragonflies: small?3:4, hummingbirds: small?2:3, kelp: small?2:3, grass: small?2:3, willow: 2, waves: small?2:3, river: 2, aurora: 2, earth: 2 };
     const count = this.placement ? 1 : Math.max(1, Math.round(populations[this.id] * this.density));
     const occupied: {x:number;y:number;radius:number}[]=[];
     this.agents = Array.from({ length: count }, (_, i) => {
@@ -125,7 +125,7 @@ export class SceneLife {
     }
     const center=this.agents.reduce((p,a)=>({x:p.x+a.x/this.agents.length,y:p.y+a.y/this.agents.length}),{x:0,y:0});
     for(const a of this.agents) {
-      let speed=this.id==="cars"?27:this.id==="houses"?10:this.id==="birds"?28:this.id==="shoal"?23:this.id==="rays"?18:this.id==="octopus"?8:15;
+      let speed=this.id==="cars"?27:this.id==="houses"||this.id==="terrain"?10:this.id==="birds"?28:this.id==="shoal"?23:this.id==="rays"?18:this.id==="octopus"?8:15;
       let fx=Math.cos(a.angle+Math.sin(t*.23+a.seed)*.7),fy=Math.sin(a.angle+Math.sin(t*.23+a.seed)*.7);
       if(this.id==="jellyfish") {fx=Math.sin(t*.25+a.seed)*.35;fy=-.6-(.5+.5*Math.sin(t*1.6+a.phase))*.6;speed=8;}
       if(this.id==="birds"||this.id==="shoal") {
@@ -202,6 +202,7 @@ export class SceneLife {
       c.translate(a.x,a.y);
       if(this.id==="branch-tree")drawBranchTree(c,a,t,this.disturbance(a.x,a.y)*.03);
       if(this.id==="houses")drawHouse(c,a,t);
+      if(this.id==="terrain")drawTerrain(c,a,t);
       if(this.id==="cars")drawCar(c,a,t);
       if(this.id==="trees")drawTree(c,a,t,i,this.disturbance(a.x,a.y)*.04);
       if(this.id==="shoal") {c.rotate(a.angle);this.drawFish(c,a);}

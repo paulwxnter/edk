@@ -24,6 +24,18 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	"ratelimits": [
+		{ "name": "RL_API_COMMUNITY", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } },
+		{ "name": "RL_API_TIER1", "namespace_id": "1002", "simple": { "limit": 120, "period": 60 } },
+		{ "name": "RL_API_TIER2", "namespace_id": "1003", "simple": { "limit": 300, "period": 60 } },
+		{ "name": "RL_API_TIER3", "namespace_id": "1004", "simple": { "limit": 600, "period": 60 } },
+		{ "name": "RL_API_TIER4", "namespace_id": "1005", "simple": { "limit": 1200, "period": 60 } },
+		{ "name": "RL_API_TIER5", "namespace_id": "1006", "simple": { "limit": 3000, "period": 60 } },
+		{ "name": "RL_AUTH", "namespace_id": "1010", "simple": { "limit": 10, "period": 60 } }
+	],
+	"triggers": {
+		"crons": ["*/5 * * * *"]
+	},
 	"send_email": [
 		{
 			"name": "EMAIL",
@@ -36,6 +48,7 @@
 		"CDN_URL": "https://cdn.edk.earth",
 		"EMBED_URL": "https://embed.edk.earth",
 		"STRIPE_MODE": "test",
+		"DISCOVER_SPATIAL": "1",
 		"EMAIL_FROM": "hello@edk.earth",
 		"REQUIRE_EMAIL_VERIFICATION": "true"
 	}

@@ -1,8 +1,9 @@
+import { useState } from "react";
 import { Link } from "react-router";
 import { SiteLayout } from "~/components/chrome";
 import { AgentChip, AgentMark, CodeBlock } from "~/components/copy";
 import AsciiArt from "~/ascii/AsciiArt";
-import { agentPrompt, agentSetups, INSTALL, rulesSnippet } from "~/lib/agents";
+import { AGENT_TARGETS, agentPrompt, agentSetups, INSTALL, rulesSnippet, type AgentTarget } from "~/lib/agents";
 import { FREE_CU } from "~/lib/pricing";
 
 export const meta = () => [
@@ -11,13 +12,13 @@ export const meta = () => [
 ];
 
 export default function Agents() {
+  const [target, setTarget] = useState<AgentTarget>("claude-code");
   return (
     <SiteLayout>
       <section className="page-hero art-host" style={{ position: "relative" }}>
         <div className="art-layer" style={{ left: "55%" }}><AsciiArt art={[{ scene: "birds", x: 0.5, y: 0.45, size: 0.5 }]} /></div>
-        <span className="section-kicker">Agents</span>
         <h1>Connect your agent</h1>
-        <p>Give Claude, Codex, Cursor or Gemini a compass. Copy one prompt into your agent, or add the MCP server yourself.</p>
+        <p>Give Claude, Codex, Cursor, Gemini or ChatGPT a compass. Pick your agent and paste its prompt, or add the MCP server yourself.</p>
         <div style={{ marginTop: "1.5rem", position: "relative" }}><AgentChip /></div>
       </section>
       <div className="docs">
@@ -32,14 +33,20 @@ export default function Agents() {
         <article className="prose">
           <h2 id="signup">1. Sign up and make a key</h2>
           <ol>
-            <li><Link to="/sign-up">Create an account</Link> ({FREE_CU} free CU).</li>
+            <li><Link to="/sign-up">Create an account</Link> ({FREE_CU} free CU every month).</li>
             <li>In <Link to="/console/keys">API Keys</Link>, create a secret key.</li>
             <li>Set it in your shell as <code>EDK_API_KEY</code>. Don't paste it into a chat.</li>
           </ol>
 
           <h2 id="prompt">2. Paste the prompt</h2>
-          <p>It connects EDK, runs a test search, and adds a short note to your project rules. Agents can also fetch it from <a href="/agents.md">edk.earth/agents.md</a>.</p>
-          <CodeBlock label="agents.md" code={agentPrompt()} />
+          <p>Each agent sets up differently, so each has its own prompt. Pick yours:</p>
+          <div className="tabs" role="tablist" style={{ marginBottom: "1rem" }}>
+            {AGENT_TARGETS.map((t) => (
+              <button key={t.id} type="button" role="tab" aria-selected={target === t.id} className={target === t.id ? "active" : ""} onClick={() => setTarget(t.id)}>{t.name}</button>
+            ))}
+          </div>
+          <CodeBlock label={`agents.md?for=${target}`} code={agentPrompt(target)} />
+          <p>Agents can fetch it themselves from <a href={`/agents.md?for=${target}`}>edk.earth/agents.md?for={target}</a>.</p>
 
           <h2>Or connect by hand</h2>
           <p>Every client runs the same MCP server: <code>{INSTALL.mcp}</code> with <code>EDK_API_KEY</code> set.</p>
